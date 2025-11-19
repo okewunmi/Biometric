@@ -1,8 +1,28 @@
 import { create } from 'zustand';
 import { getCurrentAdmin, adminLogout } from './appwrite';
 
+// ✅ Define types to match what getCurrentAdmin() actually returns
+interface User {
+  id: string;
+  username: string;
+  email: string;
+  isActive: boolean;
+  createdAt?: string;
+}
+
+interface AuthState {
+  user: User | null;
+  loading: boolean;
+  lastChecked: number | null;
+  setUser: (user: User | null) => void;
+  setLoading: (loading: boolean) => void;
+  checkAuth: (forceRefresh?: boolean) => Promise<{ success: boolean; user?: User }>;
+  logout: () => Promise<void>;
+  clearCache: () => void;
+}
+
 // ✅ Global state management (persists across components)
-export const useAuthStore = create((set, get) => ({
+export const useAuthStore = create<AuthState>((set, get) => ({
   user: null,
   loading: true,
   lastChecked: null,
