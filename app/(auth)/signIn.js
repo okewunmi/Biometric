@@ -198,17 +198,6 @@ export default function AdminLoginPage() {
                   </>
                 )}
               </TouchableOpacity>
-
-              {/* Sign Up Link */}
-              <View style={styles.signupContainer}>
-                <Text style={styles.signupText}>Don't have an account? </Text>
-                <TouchableOpacity 
-                  onPress={() => router.push('/(auth)/signUp')}
-                  disabled={isLoading}
-                >
-                  <Text style={styles.signupLink}>Create one here</Text>
-                </TouchableOpacity>
-              </View>
             </View>
           </View>
 

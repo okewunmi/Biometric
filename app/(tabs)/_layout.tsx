@@ -18,7 +18,7 @@ const insets = useSafeAreaInsets();
 //   if (!loading && !isLogged) return <Redirect href="/signIn" />;
 // Define common tab bar style
   const tabBarStyle = {
-    backgroundColor: '#fff',
+    backgroundColor: '#c2c2c2ff',
     paddingTop: isTablet ? 12 : 8,
     height: (isTablet ? 90 : 80) + insets.bottom,
     borderTopWidth: 1,
