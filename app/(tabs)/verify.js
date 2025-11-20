@@ -7,7 +7,6 @@ import {
   Alert,
   ActivityIndicator,
   StyleSheet,
-  SafeAreaView,
   Image,
   Dimensions
 } from 'react-native';
@@ -15,6 +14,7 @@ import { useRouter } from 'expo-router';
 import { Camera } from 'expo-camera';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import * as ImageManipulator from 'expo-image-manipulator';
+import { SafeAreaView } from "react-native-safe-area-context";
 import { searchStudentByFace, verifyStudentFingerprint } from '@/lib/appwrite';
 import fingerprintScanner from '@/lib/fingerprint-digitalpersona';
 
@@ -279,13 +279,13 @@ export default function ExamVerificationInterface() {
       <ScrollView style={styles.scrollView}>
         <View style={styles.content}>
           {/* Header */}
-          <TouchableOpacity 
+          {/* <TouchableOpacity 
             style={styles.backButton}
             onPress={() => router.push("/Admin")}
           >
             <Ionicons name="arrow-back" size={20} color="#666" />
             <Text style={styles.backButtonText}>Back to Dashboard</Text>
-          </TouchableOpacity>
+          </TouchableOpacity> */}
 
           <View style={styles.header}>
             <View style={styles.headerTitleRow}>

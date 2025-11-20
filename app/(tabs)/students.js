@@ -121,27 +121,76 @@ export default function StudentManagement() {
     setFormData({ ...formData, [name]: value });
   };
 
-  const pickImage = async () => {
+  // const pickImage = async () => {
+  //   const result = await ImagePicker.launchImageLibraryAsync({
+  //     mediaTypes: ImagePicker.MediaType.Images,
+  //     allowsEditing: true,
+  //     aspect: [1, 1],
+  //     quality: 0.8,
+  //   });
+
+  //   if (!result.canceled && result.assets[0]) {
+  //     const asset = result.assets[0];
+      
+  //     // Check file size (estimate from URI)
+  //     if (asset.fileSize && asset.fileSize > 5 * 1024 * 1024) {
+  //       showNotification('File size must be less than 5MB', 'error');
+  //       return;
+  //     }
+
+  //     setFormData({ ...formData, profilePicture: asset });
+  //     setProfilePreview(asset.uri);
+  //   }
+  // };
+// Fix for the pickImage function in your students.js file
+
+const pickImage = async () => {
+  try {
+    // Request permissions first
+    const permissionResult = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    
+    if (permissionResult.granted === false) {
+      showNotification('Permission to access camera roll is required!', 'error');
+      return;
+    }
+
+    // Launch image picker with correct configuration
     const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaType.Images,
+      mediaTypes: ['images'], // Use array of strings instead
       allowsEditing: true,
       aspect: [1, 1],
       quality: 0.8,
     });
 
-    if (!result.canceled && result.assets[0]) {
+    console.log('Image picker result:', result);
+
+    if (!result.canceled && result.assets && result.assets[0]) {
       const asset = result.assets[0];
       
-      // Check file size (estimate from URI)
+      // Check file size if available
       if (asset.fileSize && asset.fileSize > 5 * 1024 * 1024) {
         showNotification('File size must be less than 5MB', 'error');
         return;
       }
 
+      // Store the complete asset object
       setFormData({ ...formData, profilePicture: asset });
       setProfilePreview(asset.uri);
+      
+      console.log('Image selected:', {
+        uri: asset.uri,
+        width: asset.width,
+        height: asset.height,
+        type: asset.type
+      });
+    } else {
+      console.log('Image picker cancelled');
     }
-  };
+  } catch (error) {
+    console.error('Error picking image:', error);
+    showNotification('Failed to pick image: ' + error.message, 'error');
+  }
+};
 
   const handleSubmit = async () => {
     if (!formData.surname || !formData.firstName || !formData.middleName || 

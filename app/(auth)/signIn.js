@@ -65,7 +65,7 @@ export default function AdminLoginPage() {
         await new Promise(resolve => setTimeout(resolve, 500));
         
         // Navigate to home
-        router.replace('/(tabs)/home');
+        router.replace('/home');
       } else {
         console.log('❌ Login failed:', response.error);
         setError(response.error || 'Login failed');
