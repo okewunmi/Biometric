@@ -24,12 +24,12 @@ export const AdminAuthProvider = ({ children }) => {
       } else {
         // No user found, redirect to login
         setAdmin(null);
-        router.push('/(auth)/singnIn');
+        router.push('/(auth)/signIn');
       }
     } catch (error) {
       console.error('Auth check error:', error);
       setAdmin(null);
-      router.push('/(auth)/singnIn');
+      router.push('/(auth)/signIn');
     } finally {
       setLoading(false);
     }
@@ -39,7 +39,7 @@ export const AdminAuthProvider = ({ children }) => {
     try {
       await logOut();
       setAdmin(null);
-      router.push('/(auth)/singnIn');
+      router.push('/(auth)/signIn');
     } catch (error) {
       console.error('Logout error:', error);
     }

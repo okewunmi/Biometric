@@ -1,6 +1,6 @@
-import React from "react";
 import { Redirect, Stack } from "expo-router";
 import { StatusBar } from "expo-status-bar";
+import React from "react";
 import { useAdminAuth } from '../../context/AdminAuthContext';
 const Layout = () => {
 const { admin, loading, logout } = useAdminAuth();
@@ -14,10 +14,10 @@ const { admin, loading, logout } = useAdminAuth();
         
         <Stack.Screen name="signIn" options={{ 
           headerShown: false,
-          gestureEnabled: false, // Prevent swipe back
+          gestureEnabled: false, 
         }}  />
         <Stack.Screen name="signUp" 
-        options={{ headerBackVisible: true, headerTitle: '' }} />
+        options={{ headerShown: false}} />
       </Stack>
       <StatusBar style="auto" />
     </>

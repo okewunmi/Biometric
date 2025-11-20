@@ -8,7 +8,6 @@ import {
   Alert,
   ActivityIndicator,
   StyleSheet,
-  SafeAreaView,
   Modal,
   Image,
   Platform
@@ -16,6 +15,7 @@ import {
 import { useRouter } from 'expo-router';
 import { Ionicons, MaterialIcons, MaterialCommunityIcons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
+import { SafeAreaView } from "react-native-safe-area-context";
 import {
   createStudent,
   getAllStudents,
@@ -539,13 +539,13 @@ export default function StudentManagement() {
       <ScrollView style={styles.scrollView}>
         <View style={styles.content}>
           {/* Header */}
-          <TouchableOpacity 
+          {/* <TouchableOpacity 
             style={styles.backButton}
-            onPress={() => router.push("/Admin")}
+            onPress={() => router.push("/home")}
           >
             <Ionicons name="arrow-back" size={20} color="#666" />
             <Text style={styles.backButtonText}>Back to Dashboard</Text>
-          </TouchableOpacity>
+          </TouchableOpacity> */}
 
           <View style={styles.headerContainer}>
             <View style={styles.headerLeft}>
@@ -1172,7 +1172,7 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   headerTitle: {
-    fontSize: 28,
+    fontSize: 24,
     fontWeight: 'bold',
     color: '#1f2937',
     marginLeft: 12,
