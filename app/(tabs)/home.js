@@ -43,7 +43,7 @@ export default function AdminDashboard() {
   const pathname = usePathname();
   const insets = useSafeAreaInsets();
   
-  const { user, loading, checkAuth, logout } = useAuth();
+  const { user, loading, initialized, checkAuth, logout } = useAuth();
 
   const [dashboardStats, setDashboardStats] = useState({
     totalStudents: 0,
@@ -100,18 +100,38 @@ export default function AdminDashboard() {
   ];
 
   // Auth check
-  useEffect(() => {
-    const verifyAuth = async () => {
+  // useEffect(() => {
+  //   const verifyAuth = async () => {
+  //     const result = await checkAuth();
+
+  //     if (!result.success || !result.user) {
+  //       console.log('No active session, redirecting to login');
+  //       router.replace('/(auth)/signIn');
+  //     }
+  //   };
+
+  //   verifyAuth();
+  // }, [checkAuth, router]);
+  
+useEffect(() => {
+  // Only verify auth if not already initialized
+  const verifyAuth = async () => {
+    if (!initialized) {
+      console.log('🔍 Home: Initial auth check');
       const result = await checkAuth();
 
       if (!result.success || !result.user) {
-        console.log('No active session, redirecting to login');
-        router.replace('/(auth)/signIn');
+        console.log('❌ No active session, redirecting to login');
+        router.replace('/signIn');
       }
-    };
+    } else {
+      console.log('✅ Home: Auth already verified');
+    }
+  };
 
-    verifyAuth();
-  }, [checkAuth, router]);
+  verifyAuth();
+}, [initialized]);
+
 
   // Fetch dashboard statistics
   const fetchStats = useCallback(async () => {

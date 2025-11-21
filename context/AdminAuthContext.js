@@ -94,16 +94,14 @@ export const AdminAuthProvider = ({ children }) => {
   useEffect(() => {
     if (loading || isCheckingAuth) return; // Don't redirect while checking
     
-    // const inAuthGroup = segments[0] === '(auth)';
-    // const inTabsGroup = segments[0] === '(tabs)';
+    const inAuthGroup = segments[0] === '(auth)';
+    const inTabsGroup = segments[0] === '(tabs)'; 
     
-    if (!admin ) {
-    // if (!admin && !inAuthGroup) {
+    if (!admin && !inAuthGroup) {
       // User not logged in and not on auth screen - redirect to login
       console.log('No active session, redirecting to login');
       router.replace('/signIn');
-    } else if (admin ) {
-    // } else if (admin && inAuthGroup) {
+    } else if (admin && inAuthGroup) {
       // User logged in but on auth screen - redirect to home
       console.log('User authenticated, redirecting to home');
       router.replace('/home');
