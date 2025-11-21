@@ -1,20 +1,20 @@
-import React, { useState } from 'react';
+import { createAdminUser } from '@/lib/appwrite';
+import { MaterialIcons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
+import { useRouter } from 'expo-router';
+import { useState } from 'react';
 import {
-  View,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  StyleSheet,
+  ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
-  ActivityIndicator,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
-import { MaterialIcons } from '@expo/vector-icons';
-import { createAdminUser } from '@/lib/appwrite';
-import { LinearGradient } from 'expo-linear-gradient';
 
 export default function AdminRegistration() {
   const router = useRouter();
@@ -285,14 +285,6 @@ export default function AdminRegistration() {
                   )}
                 </LinearGradient>
               </TouchableOpacity>
-
-              {/* Sign In Link */}
-              <View style={styles.signInContainer}>
-                <Text style={styles.signInText}>Already have an account? </Text>
-                <TouchableOpacity onPress={() => router.push('/signIn')}>
-                  <Text style={styles.signInLink}>Sign in here</Text>
-                </TouchableOpacity>
-              </View>
             </View>
           </View>
 

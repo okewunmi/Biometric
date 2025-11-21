@@ -289,7 +289,7 @@ export default function ExamVerificationInterface() {
 
           <View style={styles.header}>
             <View style={styles.headerTitleRow}>
-              <Ionicons name="shield-checkmark-outline" size={40} color="#6366f1" />
+              <Ionicons name="shield-checkmark-outline" size={32} color="#6366f1" />
               <Text style={styles.headerTitle}>Student Verification</Text>
             </View>
             <Text style={styles.headerSubtitle}>
@@ -604,7 +604,7 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   headerTitle: {
-    fontSize: 28,
+    fontSize: 22,
     fontWeight: 'bold',
     color: '#1f2937',
     marginLeft: 12,

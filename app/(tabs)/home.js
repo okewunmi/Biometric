@@ -55,13 +55,13 @@ export default function AdminDashboard() {
   const [recentActivities, setRecentActivities] = useState([]);
 
   const drawerMenuItems = [
-    {
-      id: 'attendance',
-      title: 'Mark Attendance',
-      icon: 'clipboard-outline',
-      iconType: 'Ionicons',
-      route: '/attendance',
-    },
+    // {
+    //   id: 'attendance',
+    //   title: 'Mark Attendance',
+    //   icon: 'clipboard-outline',
+    //   iconType: 'Ionicons',
+    //   route: '/mark-attendance',
+    // },
     {
       id: 'reports',
       title: 'View Reports',

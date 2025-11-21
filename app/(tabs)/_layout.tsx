@@ -206,8 +206,8 @@ const TabLayout = () => {
           options={{
             title: 'Attendance',
             tabBarIcon: ({ focused }) => (
-              <FontAwesome6 
-                name={'calendar-check'} 
+              <Ionicons 
+                name={'clipboard'} 
                 size={focused ? focusedIconSize : iconSize}
                 color={focused ? '#4F46E5' : '#9CA3AF'}
               />
