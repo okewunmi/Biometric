@@ -81,7 +81,6 @@ export default function StudentManagement() {
     'Social Science',
     'Education',
     'Environmetal',
-
   ];
 
   const levels = ['100', '200', '300', '400', '500'];
