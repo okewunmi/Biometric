@@ -77,14 +77,11 @@ export default function StudentManagement() {
   });
 
   const departments = [
-    'Computer Science',
-    'Software Engineering',
-    'Information Technology',
-    'Cyber Security',
-    'Data Science',
-    'Electrical and Electronics Engineering',
-    'Mechanical Engineering',
-    'Civil Engineering'
+    'Engineering',
+    'Social Science',
+    'Education',
+    'Environmetal',
+
   ];
 
   const levels = ['100', '200', '300', '400', '500'];
@@ -878,7 +875,7 @@ const pickImage = async () => {
               </View>
 
               <View style={styles.formGroup}>
-                <Text style={styles.label}>Department *</Text>
+                <Text style={styles.label}>Faculty *</Text>
                 <TouchableOpacity
                   style={styles.dropdown}
                   onPress={() => setShowDepartmentPicker(true)}
@@ -891,7 +888,7 @@ const pickImage = async () => {
               </View>
 
               <View style={styles.formGroup}>
-                <Text style={styles.label}>Course *</Text>
+                <Text style={styles.label}>Department *</Text>
                 <TextInput
                   style={styles.input}
                   value={formData.course}

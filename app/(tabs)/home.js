@@ -1,30 +1,28 @@
 
-import React, { useState, useEffect, useCallback } from 'react';
-import {
-  View,
-  Text,
-  ScrollView,
-  TouchableOpacity,
-  StyleSheet,
-  ActivityIndicator,
-  RefreshControl,
-  Dimensions,
-  Platform,
-  Modal,
-  Pressable,
-  Alert
-} from 'react-native';
-import {
-  Ionicons,
-  MaterialCommunityIcons,
-  MaterialIcons,
-  FontAwesome6,
-} from '@expo/vector-icons';
-import { LinearGradient } from 'expo-linear-gradient';
-import { useRouter, usePathname } from 'expo-router';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { getDashboardStats, getRecentActivity } from '@/lib/appwrite';
 import { useAuth } from '@/lib/useAuth';
+import {
+  FontAwesome6,
+  Ionicons,
+  MaterialIcons
+} from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
+import { usePathname, useRouter } from 'expo-router';
+import { useCallback, useEffect, useState } from 'react';
+import {
+  ActivityIndicator,
+  Alert,
+  Dimensions,
+  Modal,
+  Pressable,
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View
+} from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 const { width, height } = Dimensions.get('window');
 const isTablet = width >= 768;
@@ -331,28 +329,35 @@ const handleSignOut = async () => {
       icon: 'person-add',
       color: '#3B82F6',
       bgColor: '#DBEAFE',
-      route: '/(admin)/students',
+      route: '/students',
     },
     {
       title: 'Upload Course',
       icon: 'cloud-upload',
       color: '#10B981',
       bgColor: '#D1FAE5',
-      route: '/(admin)/courses',
+      route: '/courses',
     },
     {
       title: 'Verify Student',
       icon: 'shield-checkmark',
       color: '#8B5CF6',
       bgColor: '#EDE9FE',
-      route: '/(admin)/verify',
+      route: '/verify',
     },
+    // {
+    //   title: 'Exam Session',
+    //   icon: 'school',
+    //   color: '#F59E0B',
+    //   bgColor: '#FEF3C7',
+    //   route: '/(admin)/exam-sessions',
+    // },
     {
-      title: 'Exam Session',
-      icon: 'school',
+      title: 'Attendace Report',
+      icon: 'bar-chart',
       color: '#F59E0B',
       bgColor: '#FEF3C7',
-      route: '/(admin)/exam-sessions',
+      route: '/reports',
     },
   ];
 
