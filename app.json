@@ -1,3 +1,4 @@
+
 {
   "expo": {
     "name": "FTPV",
@@ -20,7 +21,11 @@
       },
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
-      "package": "com.fourfive.FTPV"
+      "package": "com.fourfive.FTPV",
+      "permissions": [
+        "android.permission.INTERNET",
+        "android.permission.USB_PERMISSION"
+      ]
     },
     "web": {
       "output": "static",
@@ -29,7 +34,6 @@
     "plugins": [
       "expo-router",
       [
-        
         "expo-splash-screen",
         {
           "image": "./assets/images/splash-icon.png",
