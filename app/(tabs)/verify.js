@@ -20,16 +20,7 @@ const fingerprintEmitter = FingerprintModule ? new NativeEventEmitter(Fingerprin
 const { width } = Dimensions.get('window');
 
 // ⚠️ IMPORTANT: Replace with your actual server URL
-const API_BASE_URL = 'https://ftpv.appwrite.network/';
-
-// // Import face-api.js for React Native
-// // You need to install: npm install @tensorflow/tfjs @tensorflow/tfjs-react-native @vladmandic/face-api
-// import * as faceapi from '@vladmandic/face-api';
-// import * as tf from '@tensorflow/tfjs';
-// import { bundleResourceIO, decodeJpeg } from '@tensorflow/tfjs-react-native';
-import * as tf from '@tensorflow/tfjs';
-import '@tensorflow/tfjs-backend-webgl';
-import * as faceapi from '@vladmandic/face-api';
+const API_BASE_URL = 'https://ftpv.appwrite.network/'; // or http://localhost:3000 for local testing
 
 export default function ExamVerificationScreen() {
   const [verificationType, setVerificationType] = useState('');
@@ -40,13 +31,11 @@ export default function ExamVerificationScreen() {
   const [status, setStatus] = useState({ message: '', type: '' });
   const [errorMessage, setErrorMessage] = useState('');
   const [scannerAvailable, setScannerAvailable] = useState(false);
-  const [faceModelsLoaded, setFaceModelsLoaded] = useState(false);
   
   const cameraRef = useRef(null);
 
   useEffect(() => {
     checkFingerprintScanner();
-    initializeFaceAPI();
     
     // Setup fingerprint event listeners
     if (fingerprintEmitter) {
@@ -75,97 +64,6 @@ export default function ExamVerificationScreen() {
       };
     }
   }, []);
-
-  /**
-   * Initialize TensorFlow.js and load face-api.js models
-   */
- const initializeFaceAPI = async () => {
-  try {
-    console.log('🔧 Initializing TensorFlow.js...');
-    
-    // Set WebGL backend
-    await tf.setBackend('webgl');
-    await tf.ready();
-    console.log('✅ TensorFlow.js ready with WebGL backend');
-
-    console.log('📦 Loading face-api.js models...');
-    
-    // Load models from your app's assets folder
-    // Make sure you have the models in: assets/models/
-    const modelPath = FileSystem.documentDirectory + 'models';
-    
-    await Promise.all([
-      faceapi.nets.ssdMobilenetv1.loadFromUri(modelPath),
-      faceapi.nets.faceLandmark68Net.loadFromUri(modelPath),
-      faceapi.nets.faceRecognitionNet.loadFromUri(modelPath)
-    ]);
-
-    setFaceModelsLoaded(true);
-    console.log('✅ Face models loaded successfully');
-    setStatus({ message: 'Face recognition ready', type: 'success' });
-
-  } catch (error) {
-    console.error('❌ Error loading face models:', error);
-    setStatus({ 
-      message: 'Face models failed to load. Using server-side processing.', 
-      type: 'warning' 
-    });
-  }
-};
-
-  /**
-   * Extract face descriptor from image (client-side)
-   */
-  const extractFaceDescriptor = async (imageUri) => {
-  try {
-    console.log('🔍 Extracting face descriptor...');
-
-    // Read image as base64
-    const base64 = await FileSystem.readAsStringAsync(imageUri, {
-      encoding: FileSystem.EncodingType.Base64,
-    });
-
-    // Create image element for face-api.js
-    const img = new Image();
-    img.src = `data:image/jpeg;base64,${base64}`;
-    
-    await new Promise((resolve, reject) => {
-      img.onload = resolve;
-      img.onerror = reject;
-    });
-
-    // Detect face and extract descriptor
-    const detection = await faceapi
-      .detectSingleFace(img)
-      .withFaceLandmarks()
-      .withFaceDescriptor();
-
-    if (!detection) {
-      return {
-        success: false,
-        error: 'NO_FACE_DETECTED',
-        message: 'No face detected. Please ensure good lighting and face the camera.'
-      };
-    }
-
-    const confidence = Math.round(detection.detection.score * 100);
-    console.log(`✅ Face detected with ${confidence}% confidence`);
-
-    return {
-      success: true,
-      descriptor: Array.from(detection.descriptor),
-      confidence: confidence
-    };
-
-  } catch (error) {
-    console.error('❌ Error extracting descriptor:', error);
-    return {
-      success: false,
-      error: error.message,
-      message: 'Failed to process face'
-    };
-  }
-};
 
   const checkFingerprintScanner = async () => {
     try {
@@ -197,7 +95,7 @@ export default function ExamVerificationScreen() {
   };
 
   /**
-   * Handle Face Verification with CLIENT-SIDE descriptor extraction
+   * Handle Face Verification using Next.js API
    */
   const handleFaceVerification = async () => {
     // Check camera permission
@@ -226,62 +124,24 @@ export default function ExamVerificationScreen() {
 
       const photo = await cameraRef.current.takePictureAsync({
         quality: 0.95,
-        base64: false // Don't need base64 if processing locally
+        base64: true // Get base64 for API
       });
 
       setProgress({ current: 30, total: 100 });
+      setStatus({ message: 'Analyzing face...', type: 'info' });
 
-      // Try client-side extraction first (faster)
-      if (faceModelsLoaded) {
-        setStatus({ message: 'Analyzing face locally...', type: 'info' });
-        
-        const extractResult = await extractFaceDescriptor(photo.uri);
-        
-        if (extractResult.success) {
-          setProgress({ current: 60, total: 100 });
-          setStatus({ message: 'Verifying with database...', type: 'info' });
-
-          // Send only the descriptor (128 numbers) to server
-          const response = await fetch(`${API_BASE_URL}/api/verify-face`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-              descriptor: extractResult.descriptor,
-              confidence: extractResult.confidence
-            })
-          });
-
-          const result = await response.json();
-          setProgress({ current: 100, total: 100 });
-
-          handleVerificationResult(result);
-          return;
-        } else {
-          console.log('⚠️ Client-side extraction failed, falling back to server');
-        }
-      }
-
-      // Fallback: Send full image to server (if models not loaded or extraction failed)
-      setStatus({ message: 'Sending to server for analysis...', type: 'info' });
-      setProgress({ current: 40, total: 100 });
-
-      const base64 = await FileSystem.readAsStringAsync(photo.uri, {
-        encoding: FileSystem.EncodingType.Base64,
-      });
-
+      // Send to Next.js API for verification
       const response = await fetch(`${API_BASE_URL}/api/verify-face`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          image: `data:image/jpeg;base64,${base64}`
+          image: `data:image/jpeg;base64,${photo.base64}`
         })
       });
 
-      setProgress({ current: 90, total: 100 });
+      setProgress({ current: 60, total: 100 });
 
       if (!response.ok) {
         const errorData = await response.json();
@@ -291,7 +151,26 @@ export default function ExamVerificationScreen() {
       const result = await response.json();
       setProgress({ current: 100, total: 100 });
 
-      handleVerificationResult(result);
+      if (result.success && result.matched) {
+        // Match found!
+        setVerificationResult({
+          matched: true,
+          student: result.student,
+          confidence: result.confidence,
+          distance: result.distance,
+          matchTime: new Date().toLocaleTimeString(),
+          verificationType: 'Face Recognition'
+        });
+        setStatus({ message: 'Match found!', type: 'success' });
+      } else {
+        // No match
+        setVerificationResult({
+          matched: false,
+          message: result.message || 'No matching student found',
+          bestDistance: result.bestDistance
+        });
+        setStatus({ message: 'No match found', type: 'error' });
+      }
 
     } catch (err) {
       console.error('❌ Face verification error:', err);
@@ -306,32 +185,6 @@ export default function ExamVerificationScreen() {
       setTimeout(() => {
         setProgress({ current: 0, total: 0 });
       }, 1000);
-    }
-  };
-
-  /**
-   * Handle verification result from server
-   */
-  const handleVerificationResult = (result) => {
-    if (result.success && result.matched) {
-      // Match found!
-      setVerificationResult({
-        matched: true,
-        student: result.student,
-        confidence: result.confidence,
-        distance: result.distance,
-        matchTime: new Date().toLocaleTimeString(),
-        verificationType: 'Face Recognition'
-      });
-      setStatus({ message: 'Match found!', type: 'success' });
-    } else {
-      // No match
-      setVerificationResult({
-        matched: false,
-        message: result.message || 'No matching student found',
-        bestDistance: result.bestDistance
-      });
-      setStatus({ message: 'No match found', type: 'error' });
     }
   };
 
@@ -529,9 +382,6 @@ export default function ExamVerificationScreen() {
       <View style={styles.header}>
         <Text style={styles.title}>🔐 Student Verification</Text>
         <Text style={styles.subtitle}>Verify identity using biometric authentication</Text>
-        {faceModelsLoaded && (
-          <Text style={styles.modelStatus}>✓ Face models loaded (fast mode)</Text>
-        )}
       </View>
 
       {errorMessage ? (
@@ -586,9 +436,6 @@ export default function ExamVerificationScreen() {
           >
             <Text style={styles.methodEmoji}>😊</Text>
             <Text style={styles.methodLabel}>Face Recognition</Text>
-            {faceModelsLoaded && (
-              <View style={styles.availableDot} />
-            )}
           </TouchableOpacity>
         </View>
 
@@ -672,12 +519,6 @@ const styles = StyleSheet.create({
   subtitle: {
     fontSize: 14,
     color: '#6B7280'
-  },
-  modelStatus: {
-    fontSize: 12,
-    color: '#10B981',
-    marginTop: 4,
-    fontWeight: '600'
   },
   errorCard: {
     margin: 16,
@@ -934,5 +775,34 @@ const styles = StyleSheet.create({
     color: '#111827',
     flex: 1,
     textAlign: 'right'
+  },
+  buttonRow: {
+    flexDirection: 'row',
+    gap: 12,
+    width: '100%'
+  },
+  allowButton: {
+    flex: 1,
+    backgroundColor: '#10B981',
+    padding: 16,
+    borderRadius: 12,
+    alignItems: 'center'
+  },
+  resetButton: {
+    flex: 1,
+    backgroundColor: '#E5E7EB',
+    padding: 16,
+    borderRadius: 12,
+    alignItems: 'center'
+  },
+  buttonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600'
+  },
+  resetButtonText: {
+    color: '#374151',
+    fontSize: 16,
+    fontWeight: '600'
   }
 });
