@@ -1,1010 +1,932 @@
-import { useState, useEffect, useRef } from 'react';
-import { 
-  View, 
-  Text, 
-  ScrollView, 
-  TouchableOpacity, 
+import React, { useState, useEffect, useRef } from 'react';
+import {
+  View,
+  Text,
+  TouchableOpacity,
+  Image,
+  StyleSheet,
   Alert,
   ActivityIndicator,
-  StyleSheet,
-  Image,
+  ScrollView,
   Dimensions
 } from 'react-native';
-import { useRouter } from 'expo-router';
 import { Camera } from 'expo-camera';
-import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
-import * as ImageManipulator from 'expo-image-manipulator';
-import { SafeAreaView } from "react-native-safe-area-context";
-import { searchStudentByFace, verifyStudentFingerprint } from '@/lib/appwrite';
-import fingerprintScanner from '@/lib/fingerprint-digitalpersona';
+import { NativeModules, NativeEventEmitter } from 'react-native';
+import * as FileSystem from 'expo-file-system';
+
+const { FingerprintModule } = NativeModules;
+const fingerprintEmitter = FingerprintModule ? new NativeEventEmitter(FingerprintModule) : null;
 
 const { width } = Dimensions.get('window');
 
-export default function ExamVerificationInterface() {
-  const router = useRouter();
+// ⚠️ IMPORTANT: Replace with your actual server URL
+const API_BASE_URL = 'https://ftpv.appwrite.network/';
+
+// Import face-api.js for React Native
+// You need to install: npm install @tensorflow/tfjs @tensorflow/tfjs-react-native @vladmandic/face-api
+import * as faceapi from '@vladmandic/face-api';
+import * as tf from '@tensorflow/tfjs';
+import { bundleResourceIO, decodeJpeg } from '@tensorflow/tfjs-react-native';
+
+export default function ExamVerificationScreen() {
+  const [verificationType, setVerificationType] = useState('');
+  const [isVerifying, setIsVerifying] = useState(false);
+  const [verificationResult, setVerificationResult] = useState(null);
+  const [cameraPermission, setCameraPermission] = useState(null);
+  const [progress, setProgress] = useState({ current: 0, total: 0 });
+  const [status, setStatus] = useState({ message: '', type: '' });
+  const [errorMessage, setErrorMessage] = useState('');
+  const [scannerAvailable, setScannerAvailable] = useState(false);
+  const [faceModelsLoaded, setFaceModelsLoaded] = useState(false);
+  
   const cameraRef = useRef(null);
 
-  const [verificationType, setVerificationType] = useState('');
-  const [isScanning, setIsScanning] = useState(false);
-  const [verificationResult, setVerificationResult] = useState(null);
-  const [cameraActive, setCameraActive] = useState(false);
-  const [hasPermission, setHasPermission] = useState(null);
-  const [scanProgress, setScanProgress] = useState(0);
-  const [errorMessage, setErrorMessage] = useState('');
-
   useEffect(() => {
-    (async () => {
-      const { status } = await Camera.requestCameraPermissionsAsync();
-      setHasPermission(status === 'granted');
-    })();
+    checkFingerprintScanner();
+    initializeFaceAPI();
+    
+    // Setup fingerprint event listeners
+    if (fingerprintEmitter) {
+      const listeners = [
+        fingerprintEmitter.addListener('onScanStarted', () => {
+          setStatus({ message: 'Place finger on scanner...', type: 'info' });
+        }),
+        
+        fingerprintEmitter.addListener('onScanComplete', async (data) => {
+          setStatus({ message: 'Verifying with server...', type: 'info' });
+          await verifyFingerprintWithServer(data.imageData);
+        }),
+        
+        fingerprintEmitter.addListener('onScanError', (error) => {
+          setStatus({ message: `Error: ${error.error}`, type: 'error' });
+          setIsVerifying(false);
+          Alert.alert('Scan Error', error.error);
+        })
+      ];
 
-    return () => {
-      fingerprintScanner.stop();
-    };
+      return () => {
+        listeners.forEach(listener => listener.remove());
+        if (FingerprintModule?.close) {
+          FingerprintModule.close();
+        }
+      };
+    }
   }, []);
 
-  const startCamera = () => {
-    setCameraActive(true);
+  /**
+   * Initialize TensorFlow.js and load face-api.js models
+   */
+  const initializeFaceAPI = async () => {
+    try {
+      console.log('🔧 Initializing TensorFlow.js...');
+      await tf.ready();
+      console.log('✅ TensorFlow.js ready');
+
+      console.log('📦 Loading face-api.js models...');
+      
+      // Load models from your app's assets folder
+      // Make sure you have the models in: assets/models/
+      const modelPath = FileSystem.documentDirectory + 'models';
+      
+      await Promise.all([
+        faceapi.nets.ssdMobilenetv1.loadFromUri(modelPath),
+        faceapi.nets.faceLandmark68Net.loadFromUri(modelPath),
+        faceapi.nets.faceRecognitionNet.loadFromUri(modelPath)
+      ]);
+
+      setFaceModelsLoaded(true);
+      console.log('✅ Face models loaded successfully');
+      setStatus({ message: 'Face recognition ready', type: 'success' });
+
+    } catch (error) {
+      console.error('❌ Error loading face models:', error);
+      setStatus({ 
+        message: 'Face models failed to load. Using server-side processing.', 
+        type: 'warning' 
+      });
+      // We'll fall back to server-side processing
+    }
+  };
+
+  /**
+   * Extract face descriptor from image (client-side)
+   */
+  const extractFaceDescriptor = async (imageUri) => {
+    try {
+      console.log('🔍 Extracting face descriptor...');
+
+      // Read image as base64
+      const base64 = await FileSystem.readAsStringAsync(imageUri, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+
+      // Decode JPEG to tensor
+      const imageBuffer = tf.util.encodeString(base64, 'base64').buffer;
+      const imageArray = new Uint8Array(imageBuffer);
+      const imageTensor = decodeJpeg(imageArray);
+
+      // Detect face and extract descriptor
+      const detection = await faceapi
+        .detectSingleFace(imageTensor)
+        .withFaceLandmarks()
+        .withFaceDescriptor();
+
+      // Clean up tensor
+      imageTensor.dispose();
+
+      if (!detection) {
+        return {
+          success: false,
+          error: 'NO_FACE_DETECTED',
+          message: 'No face detected. Please ensure good lighting and face the camera.'
+        };
+      }
+
+      const confidence = Math.round(detection.detection.score * 100);
+      console.log(`✅ Face detected with ${confidence}% confidence`);
+
+      return {
+        success: true,
+        descriptor: Array.from(detection.descriptor),
+        confidence: confidence
+      };
+
+    } catch (error) {
+      console.error('❌ Error extracting descriptor:', error);
+      return {
+        success: false,
+        error: error.message,
+        message: 'Failed to process face'
+      };
+    }
+  };
+
+  const checkFingerprintScanner = async () => {
+    try {
+      if (!FingerprintModule) {
+        console.log('⚠️ Fingerprint module not available');
+        return;
+      }
+
+      const availability = await FingerprintModule.isAvailable();
+      setScannerAvailable(availability.available);
+
+      if (availability.available) {
+        const initResult = await FingerprintModule.initialize();
+        if (initResult.success) {
+          setStatus({ message: 'Fingerprint scanner ready', type: 'success' });
+        }
+      } else {
+        setStatus({ message: 'Connect scanner via OTG', type: 'warning' });
+      }
+    } catch (error) {
+      console.error('Scanner check error:', error);
+    }
+  };
+
+  const requestCameraPermission = async () => {
+    const { status } = await Camera.requestCameraPermissionsAsync();
+    setCameraPermission(status === 'granted');
+    return status === 'granted';
+  };
+
+  /**
+   * Handle Face Verification with CLIENT-SIDE descriptor extraction
+   */
+  const handleFaceVerification = async () => {
+    // Check camera permission
+    if (!cameraPermission) {
+      const granted = await requestCameraPermission();
+      if (!granted) {
+        Alert.alert('Permission Denied', 'Camera access is required for face verification');
+        return;
+      }
+    }
+
+    setIsVerifying(true);
+    setVerificationResult(null);
+    setProgress({ current: 0, total: 100 });
     setErrorMessage('');
-  };
-
-  const stopCamera = () => {
-    setCameraActive(false);
-  };
-
-  const captureFaceImage = async () => {
-    if (!cameraRef.current) return null;
+    setStatus({ message: 'Preparing camera...', type: 'info' });
 
     try {
+      // Capture photo from camera
+      if (!cameraRef.current) {
+        throw new Error('Camera not ready');
+      }
+
+      setStatus({ message: 'Capturing face...', type: 'info' });
+      setProgress({ current: 10, total: 100 });
+
       const photo = await cameraRef.current.takePictureAsync({
         quality: 0.95,
-        base64: true,
+        base64: false // Don't need base64 if processing locally
       });
 
-      // Optionally resize/compress the image
-      const manipResult = await ImageManipulator.manipulate(
-        photo.uri,
-        [{ resize: { width: 1280 } }],
-        { compress: 0.95, format: ImageManipulator.SaveFormat.JPEG, base64: true }
-      );
+      setProgress({ current: 30, total: 100 });
 
-      return `data:image/jpeg;base64,${manipResult.base64}`;
-    } catch (error) {
-      console.error('Error capturing image:', error);
-      return null;
-    }
-  };
+      // Try client-side extraction first (faster)
+      if (faceModelsLoaded) {
+        setStatus({ message: 'Analyzing face locally...', type: 'info' });
+        
+        const extractResult = await extractFaceDescriptor(photo.uri);
+        
+        if (extractResult.success) {
+          setProgress({ current: 60, total: 100 });
+          setStatus({ message: 'Verifying with database...', type: 'info' });
 
-  const handleFaceVerification = async () => {
-    if (!cameraActive) {
-      startCamera();
-      return;
-    }
+          // Send only the descriptor (128 numbers) to server
+          const response = await fetch(`${API_BASE_URL}/api/verify-face`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              descriptor: extractResult.descriptor,
+              confidence: extractResult.confidence
+            })
+          });
 
-    setIsScanning(true);
-    setVerificationResult(null);
-    setScanProgress(0);
-    setErrorMessage('');
+          const result = await response.json();
+          setProgress({ current: 100, total: 100 });
 
-    try {
-      setScanProgress(20);
-      const capturedImageBase64 = await captureFaceImage();
-      
-      if (!capturedImageBase64) {
-        throw new Error('Failed to capture image');
+          handleVerificationResult(result);
+          return;
+        } else {
+          console.log('⚠️ Client-side extraction failed, falling back to server');
+        }
       }
 
-      setScanProgress(40);
-      console.log('📸 Image captured, sending to API...');
+      // Fallback: Send full image to server (if models not loaded or extraction failed)
+      setStatus({ message: 'Sending to server for analysis...', type: 'info' });
+      setProgress({ current: 40, total: 100 });
 
-      const response = await fetch('/api/verify-face-search', {
+      const base64 = await FileSystem.readAsStringAsync(photo.uri, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+
+      const response = await fetch(`${API_BASE_URL}/api/verify-face`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ capturedImageBase64: capturedImageBase64 })
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          image: `data:image/jpeg;base64,${base64}`
+        })
       });
 
-      console.log('📥 Response status:', response.status);
-      console.log('📥 Response ok?', response.ok);
+      setProgress({ current: 90, total: 100 });
 
-      const responseText = await response.text();
-      console.log('📥 Raw response:', responseText);
-
-      if (!responseText || responseText.trim() === '') {
-        throw new Error('API returned empty response. Check server logs.');
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.message || 'Verification failed');
       }
 
-      let result;
-      try {
-        result = JSON.parse(responseText);
-      } catch (parseError) {
-        console.error('❌ Failed to parse JSON:', parseError);
-        console.error('❌ Response was:', responseText);
-        throw new Error(`Invalid response from server: ${responseText.substring(0, 100)}`);
-      }
+      const result = await response.json();
+      setProgress({ current: 100, total: 100 });
 
-      setScanProgress(100);
-      console.log('🔍 Search result:', result);
+      handleVerificationResult(result);
 
-      if (result.success && result.matched) {
-        setVerificationResult({
-          success: true,
-          student: result.student,
-          confidence: result.confidence,
-          matchTime: result.matchTime,
-          verificationType: 'Face Recognition',
-          allMatches: result.allMatches
-        });
-        stopCamera();
-      } else {
-        setVerificationResult({
-          success: false,
-          message: result.message || 'No matching student found',
-          confidence: result.confidence || 0,
-          error: result.error
-        });
-      }
     } catch (err) {
       console.error('❌ Face verification error:', err);
       setErrorMessage(err.message);
-      setVerificationResult({
-        success: false,
-        message: err.message || 'Verification failed',
-        confidence: 0
+      setStatus({ message: err.message || 'Verification failed', type: 'error' });
+      setVerificationResult({ 
+        matched: false, 
+        message: err.message || 'Verification failed' 
       });
     } finally {
-      setIsScanning(false);
-      setScanProgress(0);
+      setIsVerifying(false);
+      setTimeout(() => {
+        setProgress({ current: 0, total: 0 });
+      }, 1000);
     }
   };
 
+  /**
+   * Handle verification result from server
+   */
+  const handleVerificationResult = (result) => {
+    if (result.success && result.matched) {
+      // Match found!
+      setVerificationResult({
+        matched: true,
+        student: result.student,
+        confidence: result.confidence,
+        distance: result.distance,
+        matchTime: new Date().toLocaleTimeString(),
+        verificationType: 'Face Recognition'
+      });
+      setStatus({ message: 'Match found!', type: 'success' });
+    } else {
+      // No match
+      setVerificationResult({
+        matched: false,
+        message: result.message || 'No matching student found',
+        bestDistance: result.bestDistance
+      });
+      setStatus({ message: 'No match found', type: 'error' });
+    }
+  };
+
+  /**
+   * Handle Fingerprint Verification
+   */
   const handleFingerprintVerification = async () => {
-    setIsScanning(true);
-    setVerificationResult(null);
-    setScanProgress(0);
-    setErrorMessage('');
-
-    try {
-      console.log('🔧 Checking fingerprint availability...');
-      setScanProgress(10);
-
-      const checkResult = await fingerprintScanner.isAvailable();
-      
-      if (!checkResult.available) {
-        throw new Error(checkResult.error || 'Fingerprint reader not available');
-      }
-
-      setScanProgress(20);
-      Alert.alert('Fingerprint Required', 'Please use your fingerprint to verify...');
-
-      const result = await verifyStudentFingerprint();
-
-      setScanProgress(100);
-
-      if (result.success && result.matched) {
-        setVerificationResult({
-          success: true,
-          student: result.student,
-          confidence: result.confidence,
-          matchTime: result.matchTime,
-          verificationType: 'Fingerprint (Windows Hello)',
-          fingerUsed: result.fingerUsed
-        });
-      } else {
-        setVerificationResult({
-          success: false,
-          message: result.message || 'No matching student found',
-          confidence: 0
-        });
-      }
-
-    } catch (err) {
-      console.error('Fingerprint verification error:', err);
-      setErrorMessage(err.message);
-      setVerificationResult({
-        success: false,
-        message: err.message || 'Verification failed',
-        confidence: 0
-      });
-    } finally {
-      setIsScanning(false);
-      setScanProgress(0);
-      await fingerprintScanner.stop();
-    }
-  };
-
-  const handleStartVerification = async () => {
-    if (!verificationType) {
-      Alert.alert('Selection Required', 'Please select a verification method');
+    if (!FingerprintModule || !scannerAvailable) {
+      Alert.alert(
+        'Scanner Not Available',
+        'Please connect the DigitalPersona scanner via OTG cable.'
+      );
       return;
     }
 
-    if (verificationType === 'Face') {
-      await handleFaceVerification();
-    } else if (verificationType === 'Fingerprint') {
-      await handleFingerprintVerification();
+    setIsVerifying(true);
+    setVerificationResult(null);
+    setProgress({ current: 0, total: 0 });
+    setErrorMessage('');
+    setStatus({ message: 'Place your finger on the scanner...', type: 'info' });
+
+    try {
+      const captureResult = await FingerprintModule.capturePrint({});
+
+      if (!captureResult.success) {
+        throw new Error(captureResult.message || 'Scan failed');
+      }
+
+      if (captureResult.quality && captureResult.quality < 50) {
+        setStatus({ 
+          message: `Quality too low (${captureResult.quality}%). Please try again.`, 
+          type: 'warning' 
+        });
+        setIsVerifying(false);
+        return;
+      }
+
+      setStatus({ message: 'Fingerprint captured! Verifying...', type: 'info' });
+      await verifyFingerprintWithServer(captureResult.imageData);
+
+    } catch (error) {
+      setStatus({ message: error.message || 'Verification failed', type: 'error' });
+      setErrorMessage(error.message);
+      setVerificationResult({ 
+        matched: false, 
+        message: 'Error: ' + error.message 
+      });
+    } finally {
+      setIsVerifying(false);
+      if (FingerprintModule?.close) {
+        await FingerprintModule.close();
+      }
+    }
+  };
+
+  /**
+   * Verify fingerprint with NBIS server
+   */
+  const verifyFingerprintWithServer = async (imageData) => {
+    try {
+      setStatus({ message: 'Sending to server...', type: 'info' });
+
+      const response = await fetch(`${API_BASE_URL}/api/fingerprint/verify-batch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          queryImage: imageData
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`Server error: ${response.status}`);
+      }
+
+      const result = await response.json();
+
+      if (result.success && result.matched && result.bestMatch) {
+        setVerificationResult({
+          matched: true,
+          student: result.bestMatch.student,
+          confidence: result.bestMatch.confidence,
+          score: result.bestMatch.score,
+          fingerName: result.bestMatch.fingerName,
+          verificationType: 'Fingerprint (NBIS)'
+        });
+        setStatus({ message: 'Match found!', type: 'success' });
+      } else {
+        setVerificationResult({
+          matched: false,
+          message: `No match found. Best score: ${result.bestMatch?.score || 0}`,
+          totalCompared: result.totalCompared
+        });
+        setStatus({ message: 'No match found', type: 'error' });
+      }
+    } catch (error) {
+      console.error('❌ Verification error:', error);
+      setStatus({ message: error.message || 'Verification failed', type: 'error' });
+      setErrorMessage(error.message);
+      setVerificationResult({ 
+        matched: false, 
+        message: 'Error: ' + error.message 
+      });
     }
   };
 
   const handleAllowEntry = () => {
     if (!verificationResult?.student) return;
-
-    const verificationData = {
-      studentId: verificationResult.student.$id,
-      matricNumber: verificationResult.student.matricNumber,
-      verificationMethod: verificationResult.verificationType,
-      verificationStatus: 'Success',
-      confidenceScore: verificationResult.confidence,
-      verificationTime: new Date().toISOString(),
-      checkedIn: true
-    };
-
-    console.log('Verification logged:', verificationData);
-    
     Alert.alert(
-      'Entry Allowed',
+      'Check-in Successful',
       `${verificationResult.student.firstName} ${verificationResult.student.surname} has been verified and checked in!`,
-      [{ text: 'OK', onPress: resetVerification }]
+      [
+        { text: 'OK', onPress: resetVerification }
+      ]
     );
   };
 
   const resetVerification = () => {
     setVerificationResult(null);
     setVerificationType('');
-    setIsScanning(false);
+    setIsVerifying(false);
     setErrorMessage('');
-    stopCamera();
+    setStatus({ message: '', type: '' });
+    setProgress({ current: 0, total: 0 });
   };
 
-  if (hasPermission === null) {
+  const getStatusColor = () => {
+    switch (status.type) {
+      case 'success': return '#10B981';
+      case 'error': return '#EF4444';
+      case 'warning': return '#F59E0B';
+      default: return '#3B82F6';
+    }
+  };
+
+  // Render verification result (SUCCESS)
+  if (verificationResult?.matched) {
     return (
-      <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color="#6366f1" />
-        <Text style={styles.loadingText}>Requesting camera permission...</Text>
-      </View>
-    );
-  }
+      <ScrollView style={styles.container}>
+        <View style={styles.resultCard}>
+          <Text style={styles.successEmoji}>✅</Text>
+          <Text style={styles.successTitle}>Match Found!</Text>
+          <Text style={styles.confidence}>
+            Confidence: {verificationResult.confidence}%
+          </Text>
 
-  if (hasPermission === false) {
-    return (
-      <View style={styles.loadingContainer}>
-        <Ionicons name="camera-off" size={64} color="#ef4444" />
-        <Text style={styles.errorTitle}>No Camera Access</Text>
-        <Text style={styles.errorText}>Please enable camera permissions in settings</Text>
-      </View>
-    );
-  }
-
-  return (
-    <SafeAreaView style={styles.container}>
-      <ScrollView style={styles.scrollView}>
-        <View style={styles.content}>
-          {/* Header */}
-          {/* <TouchableOpacity 
-            style={styles.backButton}
-            onPress={() => router.push("/Admin")}
-          >
-            <Ionicons name="arrow-back" size={20} color="#666" />
-            <Text style={styles.backButtonText}>Back to Dashboard</Text>
-          </TouchableOpacity> */}
-
-          <View style={styles.header}>
-            <View style={styles.headerTitleRow}>
-              <Ionicons name="shield-checkmark-outline" size={32} color="#6366f1" />
-              <Text style={styles.headerTitle}>Student Verification</Text>
-            </View>
-            <Text style={styles.headerSubtitle}>
-              Verify student identity using biometric authentication
-            </Text>
-          </View>
-
-          {/* Error Message */}
-          {errorMessage && (
-            <View style={styles.errorCard}>
-              <Ionicons name="alert-circle" size={24} color="#ef4444" />
-              <View style={styles.errorContent}>
-                <Text style={styles.errorCardTitle}>Error</Text>
-                <Text style={styles.errorCardText}>{errorMessage}</Text>
-              </View>
-            </View>
+          {verificationResult.student.profilePictureUrl && (
+            <Image
+              source={{ uri: verificationResult.student.profilePictureUrl }}
+              style={styles.profileImage}
+            />
           )}
 
-          {/* Verification Method Card */}
-          <View style={styles.card}>
-            <Text style={styles.cardTitle}>Verification Method</Text>
+          <Text style={styles.studentName}>
+            {verificationResult.student.firstName} {verificationResult.student.middleName} {verificationResult.student.surname}
+          </Text>
+          <Text style={styles.matricNumber}>
+            {verificationResult.student.matricNumber}
+          </Text>
 
-            <Text style={styles.label}>Select Verification Method *</Text>
-            <View style={styles.methodGrid}>
-              <TouchableOpacity
-                style={[
-                  styles.methodButton,
-                  verificationType === 'Fingerprint' && styles.methodButtonActive
-                ]}
-                onPress={() => {
-                  setVerificationType('Fingerprint');
-                  stopCamera();
-                }}
-              >
-                <MaterialCommunityIcons 
-                  name="fingerprint" 
-                  size={48} 
-                  color={verificationType === 'Fingerprint' ? '#6366f1' : '#9ca3af'} 
-                />
-                <Text style={[
-                  styles.methodButtonText,
-                  verificationType === 'Fingerprint' && styles.methodButtonTextActive
-                ]}>
-                  Fingerprint
-                </Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[
-                  styles.methodButton,
-                  verificationType === 'Face' && styles.methodButtonActivePurple
-                ]}
-                onPress={() => setVerificationType('Face')}
-              >
-                <Ionicons 
-                  name="happy-outline" 
-                  size={48} 
-                  color={verificationType === 'Face' ? '#9333ea' : '#9ca3af'} 
-                />
-                <Text style={[
-                  styles.methodButtonText,
-                  verificationType === 'Face' && styles.methodButtonTextActivePurple
-                ]}>
-                  Face Recognition
-                </Text>
-              </TouchableOpacity>
-            </View>
-
-            {/* Camera View */}
-            {verificationType === 'Face' && (
-              <View style={styles.cameraContainer}>
-                {cameraActive ? (
-                  <View style={styles.cameraWrapper}>
-                    <Camera 
-                      ref={cameraRef}
-                      style={styles.camera}
-                      type={Camera.Constants.Type.front}
-                    />
-                    {isScanning && (
-                      <View style={styles.scanProgressBar}>
-                        <View style={[styles.scanProgressFill, { width: `${scanProgress}%` }]} />
-                      </View>
-                    )}
-                  </View>
-                ) : (
-                  <View style={styles.cameraPlaceholder}>
-                    <Text style={styles.cameraPlaceholderText}>
-                      Camera will activate when you click "Start Verification"
-                    </Text>
-                  </View>
-                )}
-                <Text style={styles.cameraHint}>
-                  💡 Tip: Ensure good lighting and face the camera directly
-                </Text>
-              </View>
-            )}
-
-            {/* Start Verification Button */}
-            <TouchableOpacity
-              style={[
-                styles.verifyButton,
-                (isScanning || !verificationType) && styles.verifyButtonDisabled
-              ]}
-              onPress={handleStartVerification}
-              disabled={isScanning || !verificationType}
-            >
-              <Text style={styles.verifyButtonText}>
-                {isScanning 
-                  ? `Scanning... ${scanProgress}%` 
-                  : cameraActive 
-                  ? 'Capture & Verify' 
-                  : 'Start Verification'}
-              </Text>
-            </TouchableOpacity>
-
-            {/* Scanning Status */}
-            {isScanning && (
-              <View style={styles.scanningCard}>
-                <View style={styles.scanningContent}>
-                  <ActivityIndicator size="large" color="#2563eb" />
-                  <Text style={styles.scanningText}>
-                    {verificationType === 'Fingerprint' 
-                      ? 'Verifying fingerprint...' 
-                      : 'Searching for matching face...'}
-                  </Text>
-                </View>
-                <Text style={styles.scanningSubtext}>
-                  Comparing against registered student database
-                </Text>
-              </View>
-            )}
+          <View style={styles.badge}>
+            <Text style={styles.badgeText}>{verificationResult.verificationType}</Text>
           </View>
 
-          {/* Verification Result Card */}
-          <View style={styles.card}>
-            <Text style={styles.cardTitle}>Verification Result</Text>
+          <View style={styles.detailsCard}>
+            <View style={styles.detailRow}>
+              <Text style={styles.detailLabel}>Level</Text>
+              <Text style={styles.detailValue}>{verificationResult.student.level}</Text>
+            </View>
+            <View style={styles.detailRow}>
+              <Text style={styles.detailLabel}>Department</Text>
+              <Text style={styles.detailValue}>{verificationResult.student.department}</Text>
+            </View>
+            <View style={styles.detailRow}>
+              <Text style={styles.detailLabel}>Course</Text>
+              <Text style={styles.detailValue}>{verificationResult.student.course}</Text>
+            </View>
+          </View>
 
-            {!verificationResult && !isScanning && (
-              <View style={styles.emptyResult}>
-                <Ionicons name="shield-checkmark-outline" size={128} color="#d1d5db" />
-                <Text style={styles.emptyResultTitle}>No verification in progress</Text>
-                <Text style={styles.emptyResultText}>Select method and start verification</Text>
-              </View>
-            )}
-
-            {verificationResult && !verificationResult.success && (
-              <View style={styles.failedResult}>
-                <View style={styles.failedIcon}>
-                  <Ionicons name="close" size={64} color="#ef4444" />
-                </View>
-                <Text style={styles.failedTitle}>No Match Found</Text>
-                <Text style={styles.failedMessage}>{verificationResult.message}</Text>
-                {verificationResult.confidence > 0 && (
-                  <Text style={styles.failedConfidence}>
-                    Confidence: {verificationResult.confidence}%
-                  </Text>
-                )}
-                <TouchableOpacity style={styles.tryAgainButton} onPress={resetVerification}>
-                  <Text style={styles.tryAgainButtonText}>Try Again</Text>
-                </TouchableOpacity>
-              </View>
-            )}
-
-            {verificationResult && verificationResult.success && (
-              <View style={styles.successResult}>
-                <View style={styles.successBanner}>
-                  <View style={styles.successIcon}>
-                    <Ionicons name="checkmark" size={24} color="white" />
-                  </View>
-                  <View style={styles.successInfo}>
-                    <Text style={styles.successTitle}>Verification Successful!</Text>
-                    <Text style={styles.successConfidence}>
-                      Confidence: {verificationResult.confidence}%
-                    </Text>
-                    {verificationResult.fingerUsed && (
-                      <Text style={styles.successFinger}>
-                        Matched: {verificationResult.fingerUsed} finger
-                      </Text>
-                    )}
-                  </View>
-                </View>
-
-                <View style={styles.studentCard}>
-                  {verificationResult.student.profilePictureUrl ? (
-                    <Image
-                      source={{ uri: verificationResult.student.profilePictureUrl }}
-                      style={styles.studentImage}
-                    />
-                  ) : (
-                    <View style={styles.studentImagePlaceholder}>
-                      <Ionicons name="person" size={48} color="#9ca3af" />
-                    </View>
-                  )}
-                  <View style={styles.studentInfo}>
-                    <Text style={styles.studentName}>
-                      {verificationResult.student.firstName} {verificationResult.student.middleName} {verificationResult.student.surname}
-                    </Text>
-                    <Text style={styles.studentMatric}>
-                      {verificationResult.student.matricNumber}
-                    </Text>
-                    <View style={styles.studentBadges}>
-                      <View style={styles.levelBadge}>
-                        <Text style={styles.levelBadgeText}>
-                          {verificationResult.student.level} Level
-                        </Text>
-                      </View>
-                      <View style={styles.methodBadge}>
-                        <Text style={styles.methodBadgeText}>
-                          {verificationResult.verificationType}
-                        </Text>
-                      </View>
-                    </View>
-                  </View>
-                </View>
-
-                <View style={styles.studentDetails}>
-                  <View style={styles.detailItem}>
-                    <Text style={styles.detailLabel}>Department</Text>
-                    <Text style={styles.detailValue}>
-                      {verificationResult.student.department}
-                    </Text>
-                  </View>
-                  <View style={styles.detailItem}>
-                    <Text style={styles.detailLabel}>Course</Text>
-                    <Text style={styles.detailValue}>
-                      {verificationResult.student.course}
-                    </Text>
-                  </View>
-                  <View style={styles.detailItem}>
-                    <Text style={styles.detailLabel}>Email</Text>
-                    <Text style={styles.detailValue}>
-                      {verificationResult.student.email}
-                    </Text>
-                  </View>
-                </View>
-
-                <View style={styles.actionButtons}>
-                  <TouchableOpacity 
-                    style={styles.allowButton} 
-                    onPress={handleAllowEntry}
-                  >
-                    <Text style={styles.allowButtonText}>Allow Entry</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity 
-                    style={styles.nextButton} 
-                    onPress={resetVerification}
-                  >
-                    <Text style={styles.nextButtonText}>Next Student</Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-            )}
+          <View style={styles.buttonRow}>
+            <TouchableOpacity style={styles.allowButton} onPress={handleAllowEntry}>
+              <Text style={styles.buttonText}>✓ Allow Entry</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.resetButton} onPress={resetVerification}>
+              <Text style={styles.resetButtonText}>Next Student</Text>
+            </TouchableOpacity>
           </View>
         </View>
       </ScrollView>
-    </SafeAreaView>
+    );
+  }
+
+  // Render main verification interface
+  return (
+    <ScrollView style={styles.container}>
+      <View style={styles.header}>
+        <Text style={styles.title}>🔐 Student Verification</Text>
+        <Text style={styles.subtitle}>Verify identity using biometric authentication</Text>
+        {faceModelsLoaded && (
+          <Text style={styles.modelStatus}>✓ Face models loaded (fast mode)</Text>
+        )}
+      </View>
+
+      {errorMessage ? (
+        <View style={styles.errorCard}>
+          <Text style={styles.errorIcon}>⚠️</Text>
+          <Text style={styles.errorText}>{errorMessage}</Text>
+        </View>
+      ) : null}
+
+      {status.message ? (
+        <View style={[styles.statusCard, { backgroundColor: getStatusColor() + '20' }]}>
+          <Text style={[styles.statusText, { color: getStatusColor() }]}>
+            {status.message}
+          </Text>
+          {isVerifying && <ActivityIndicator color={getStatusColor()} />}
+        </View>
+      ) : null}
+
+      {progress.total > 0 && isVerifying && (
+        <View style={styles.progressContainer}>
+          <View style={styles.progressBar}>
+            <View style={[styles.progressFill, { width: `${progress.current}%` }]} />
+          </View>
+          <Text style={styles.progressText}>{progress.current}%</Text>
+        </View>
+      )}
+
+      <View style={styles.methodCard}>
+        <Text style={styles.cardTitle}>Select Verification Method</Text>
+        
+        <View style={styles.methodButtons}>
+          <TouchableOpacity
+            style={[
+              styles.methodButton,
+              verificationType === 'Fingerprint' && styles.methodButtonActive
+            ]}
+            onPress={() => setVerificationType('Fingerprint')}
+          >
+            <Text style={styles.methodEmoji}>👆</Text>
+            <Text style={styles.methodLabel}>Fingerprint</Text>
+            {scannerAvailable && (
+              <View style={styles.availableDot} />
+            )}
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[
+              styles.methodButton,
+              verificationType === 'Face' && styles.methodButtonActive
+            ]}
+            onPress={() => setVerificationType('Face')}
+          >
+            <Text style={styles.methodEmoji}>😊</Text>
+            <Text style={styles.methodLabel}>Face Recognition</Text>
+            {faceModelsLoaded && (
+              <View style={styles.availableDot} />
+            )}
+          </TouchableOpacity>
+        </View>
+
+        {verificationType === 'Face' && (
+          <View style={styles.cameraContainer}>
+            {cameraPermission ? (
+              <>
+                <Camera
+                  ref={cameraRef}
+                  style={styles.camera}
+                  type={Camera.Constants.Type.front}
+                />
+                <Text style={styles.cameraHint}>
+                  💡 Ensure good lighting and face the camera directly
+                </Text>
+              </>
+            ) : (
+              <TouchableOpacity 
+                style={styles.permissionButton}
+                onPress={requestCameraPermission}
+              >
+                <Text style={styles.permissionText}>📷 Grant Camera Permission</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        )}
+
+        {verificationType === 'Fingerprint' && (
+          <View style={styles.instructionsCard}>
+            <Text style={styles.instructionsTitle}>📋 Instructions:</Text>
+            <Text style={styles.instructionText}>1. Ensure finger is clean and dry</Text>
+            <Text style={styles.instructionText}>2. Place finger firmly on scanner</Text>
+            <Text style={styles.instructionText}>3. Do not move until complete</Text>
+            <Text style={styles.instructionText}>4. Use the same finger you registered</Text>
+          </View>
+        )}
+
+        <TouchableOpacity
+          style={[
+            styles.verifyButton,
+            (!verificationType || isVerifying) && styles.verifyButtonDisabled
+          ]}
+          onPress={verificationType === 'Face' ? handleFaceVerification : handleFingerprintVerification}
+          disabled={!verificationType || isVerifying}
+        >
+          {isVerifying ? (
+            <View style={styles.verifyingContent}>
+              <ActivityIndicator color="#fff" />
+              <Text style={styles.verifyButtonText}>
+                {verificationType === 'Face' ? 'Verifying face...' : 'Scanning fingerprint...'}
+              </Text>
+            </View>
+          ) : (
+            <Text style={styles.verifyButtonText}>
+              {verificationType === 'Face' ? '📸 Capture & Verify' : '👆 Start Scan'}
+            </Text>
+          )}
+        </TouchableOpacity>
+      </View>
+    </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f9fafb',
-  },
-  loadingContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: '#f9fafb',
-  },
-  loadingText: {
-    marginTop: 16,
-    fontSize: 16,
-    color: '#666',
-    fontWeight: '500',
-  },
-  errorTitle: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: '#1f2937',
-    marginTop: 16,
-  },
-  errorText: {
-    fontSize: 14,
-    color: '#6b7280',
-    marginTop: 8,
-    textAlign: 'center',
-    paddingHorizontal: 32,
-  },
-  scrollView: {
-    flex: 1,
-  },
-  content: {
-    padding: 16,
-  },
-  backButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 16,
-  },
-  backButtonText: {
-    marginLeft: 8,
-    fontSize: 16,
-    color: '#666',
+    backgroundColor: '#F3F4F6'
   },
   header: {
-    marginBottom: 24,
+    padding: 20,
+    backgroundColor: '#fff',
+    borderBottomWidth: 1,
+    borderBottomColor: '#E5E7EB'
   },
-  headerTitleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 8,
-  },
-  headerTitle: {
-    fontSize: 22,
+  title: {
+    fontSize: 24,
     fontWeight: 'bold',
-    color: '#1f2937',
-    marginLeft: 12,
-    flex: 1,
+    color: '#111827',
+    marginBottom: 5
   },
-  headerSubtitle: {
+  subtitle: {
     fontSize: 14,
-    color: '#6b7280',
+    color: '#6B7280'
+  },
+  modelStatus: {
+    fontSize: 12,
+    color: '#10B981',
+    marginTop: 4,
+    fontWeight: '600'
   },
   errorCard: {
+    margin: 16,
+    padding: 16,
+    backgroundColor: '#FEE2E2',
+    borderRadius: 12,
     flexDirection: 'row',
-    alignItems: 'flex-start',
-    backgroundColor: '#fef2f2',
-    padding: 16,
-    borderRadius: 16,
-    borderWidth: 2,
-    borderColor: '#fecaca',
-    marginBottom: 16,
+    alignItems: 'center',
+    gap: 12
   },
-  errorContent: {
-    marginLeft: 12,
+  errorIcon: {
+    fontSize: 24
+  },
+  errorText: {
     flex: 1,
+    color: '#DC2626',
+    fontSize: 14
   },
-  errorCardTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#b91c1c',
-    marginBottom: 4,
-  },
-  errorCardText: {
-    fontSize: 14,
-    color: '#dc2626',
-  },
-  card: {
-    backgroundColor: 'white',
-    borderRadius: 16,
+  statusCard: {
+    margin: 16,
     padding: 16,
-    marginBottom: 16,
+    borderRadius: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between'
+  },
+  statusText: {
+    fontSize: 14,
+    fontWeight: '600',
+    flex: 1
+  },
+  progressContainer: {
+    margin: 16,
+    marginTop: 0
+  },
+  progressBar: {
+    height: 8,
+    backgroundColor: '#E5E7EB',
+    borderRadius: 4,
+    overflow: 'hidden'
+  },
+  progressFill: {
+    height: '100%',
+    backgroundColor: '#3B82F6',
+    borderRadius: 4
+  },
+  progressText: {
+    textAlign: 'right',
+    marginTop: 4,
+    fontSize: 12,
+    color: '#6B7280'
+  },
+  methodCard: {
+    margin: 16,
+    padding: 20,
+    backgroundColor: '#fff',
+    borderRadius: 16,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
+    shadowRadius: 8,
+    elevation: 3
   },
   cardTitle: {
-    fontSize: 20,
+    fontSize: 18,
     fontWeight: 'bold',
-    color: '#1f2937',
-    marginBottom: 16,
+    color: '#111827',
+    marginBottom: 16
   },
-  label: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#374151',
-    marginBottom: 12,
-  },
-  methodGrid: {
+  methodButtons: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 16,
+    gap: 12,
+    marginBottom: 20
   },
   methodButton: {
     flex: 1,
-    padding: 24,
+    padding: 20,
+    backgroundColor: '#F9FAFB',
+    borderRadius: 12,
     borderWidth: 2,
-    borderColor: '#d1d5db',
-    borderRadius: 16,
+    borderColor: '#E5E7EB',
     alignItems: 'center',
-    marginHorizontal: 4,
+    position: 'relative'
   },
   methodButtonActive: {
-    borderColor: '#6366f1',
-    backgroundColor: '#eef2ff',
+    borderColor: '#3B82F6',
+    backgroundColor: '#EFF6FF'
   },
-  methodButtonActivePurple: {
-    borderColor: '#9333ea',
-    backgroundColor: '#faf5ff',
+  methodEmoji: {
+    fontSize: 40,
+    marginBottom: 8
   },
-  methodButtonText: {
-    marginTop: 12,
+  methodLabel: {
     fontSize: 14,
     fontWeight: '600',
-    color: '#374151',
+    color: '#374151'
   },
-  methodButtonTextActive: {
-    color: '#6366f1',
-  },
-  methodButtonTextActivePurple: {
-    color: '#9333ea',
+  availableDot: {
+    position: 'absolute',
+    top: 10,
+    right: 10,
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: '#10B981'
   },
   cameraContainer: {
-    marginBottom: 16,
-  },
-  cameraWrapper: {
-    borderRadius: 12,
-    overflow: 'hidden',
-    backgroundColor: '#000',
-    aspectRatio: 4 / 3,
+    marginBottom: 20
   },
   camera: {
-    flex: 1,
-  },
-  scanProgressBar: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    height: 4,
-    backgroundColor: '#374151',
-  },
-  scanProgressFill: {
-    height: '100%',
-    backgroundColor: '#22c55e',
-  },
-  cameraPlaceholder: {
-    backgroundColor: '#1f2937',
+    width: '100%',
+    height: 300,
     borderRadius: 12,
-    aspectRatio: 4 / 3,
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 16,
-  },
-  cameraPlaceholderText: {
-    color: 'white',
-    fontSize: 14,
-    textAlign: 'center',
+    overflow: 'hidden'
   },
   cameraHint: {
     fontSize: 12,
-    color: '#6b7280',
+    color: '#6B7280',
     textAlign: 'center',
-    marginTop: 8,
+    marginTop: 8
+  },
+  permissionButton: {
+    height: 300,
+    backgroundColor: '#F9FAFB',
+    borderRadius: 12,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: '#E5E7EB',
+    borderStyle: 'dashed'
+  },
+  permissionText: {
+    fontSize: 16,
+    color: '#6B7280',
+    fontWeight: '600'
+  },
+  instructionsCard: {
+    backgroundColor: '#F9FAFB',
+    padding: 16,
+    borderRadius: 12,
+    marginBottom: 20
+  },
+  instructionsTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#374151',
+    marginBottom: 8
+  },
+  instructionText: {
+    fontSize: 13,
+    color: '#6B7280',
+    marginBottom: 4,
+    paddingLeft: 8
   },
   verifyButton: {
-    backgroundColor: '#6366f1',
+    backgroundColor: '#3B82F6',
     padding: 16,
     borderRadius: 12,
-    alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.25,
-    shadowRadius: 3.84,
-    elevation: 5,
+    alignItems: 'center'
   },
   verifyButtonDisabled: {
-    backgroundColor: '#9ca3af',
+    backgroundColor: '#9CA3AF'
+  },
+  verifyingContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12
   },
   verifyButtonText: {
-    color: 'white',
+    color: '#fff',
     fontSize: 16,
-    fontWeight: '600',
+    fontWeight: '600'
   },
-  scanningCard: {
-    backgroundColor: '#eff6ff',
-    padding: 16,
-    borderRadius: 12,
-    borderWidth: 2,
-    borderColor: '#bfdbfe',
-    marginTop: 16,
-  },
-  scanningContent: {
-    flexDirection: 'row',
+  resultCard: {
+    margin: 16,
+    padding: 24,
+    backgroundColor: '#fff',
+    borderRadius: 16,
     alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 3
   },
-  scanningText: {
-    marginLeft: 12,
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#2563eb',
-  },
-  scanningSubtext: {
-    fontSize: 14,
-    color: '#6b7280',
-    textAlign: 'center',
-  },
-  emptyResult: {
-    alignItems: 'center',
-    paddingVertical: 48,
-  },
-  emptyResultTitle: {
-    fontSize: 18,
-    fontWeight: '600',
-    color: '#9ca3af',
-    marginTop: 16,
-  },
-  emptyResultText: {
-    fontSize: 14,
-    color: '#9ca3af',
-    marginTop: 8,
-  },
-  failedResult: {
-    alignItems: 'center',
-    paddingVertical: 32,
-  },
-  failedIcon: {
-    width: 128,
-    height: 128,
-    backgroundColor: '#fef2f2',
-    borderRadius: 64,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 24,
-  },
-  failedTitle: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    color: '#ef4444',
-    marginBottom: 8,
-  },
-  failedMessage: {
-    fontSize: 16,
-    color: '#6b7280',
-    textAlign: 'center',
-    marginBottom: 16,
-    paddingHorizontal: 16,
-  },
-  failedConfidence: {
-    fontSize: 14,
-    color: '#9ca3af',
-    marginBottom: 16,
-  },
-  tryAgainButton: {
-    backgroundColor: '#e5e7eb',
-    paddingHorizontal: 24,
-    paddingVertical: 12,
-    borderRadius: 12,
-  },
-  tryAgainButtonText: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#374151',
-  },
-  successResult: {
-    marginTop: 8,
-  },
-  successBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#f0fdf4',
-    padding: 16,
-    borderRadius: 12,
-    borderWidth: 2,
-    borderColor: '#bbf7d0',
-    marginBottom: 16,
-  },
-  successIcon: {
-    width: 48,
-    height: 48,
-    backgroundColor: '#22c55e',
-    borderRadius: 24,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  successInfo: {
-    marginLeft: 12,
-    flex: 1,
+  successEmoji: {
+    fontSize: 60,
+    marginBottom: 10
   },
   successTitle: {
-    fontSize: 18,
-    fontWeight: '600',
-    color: '#16a34a',
-    marginBottom: 4,
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: '#10B981',
+    marginBottom: 8
   },
-  successConfidence: {
+  confidence: {
     fontSize: 14,
-    color: '#16a34a',
+    color: '#6B7280',
+    marginBottom: 20
   },
-  successFinger: {
-    fontSize: 12,
-    color: '#16a34a',
-    marginTop: 2,
-  },
-  studentCard: {
-    flexDirection: 'row',
-    backgroundColor: '#f9fafb',
-    padding: 16,
-    borderRadius: 12,
+  profileImage: {
+    width: 120,
+    height: 120,
+    borderRadius: 60,
     marginBottom: 16,
-  },
-  studentImage: {
-    width: 96,
-    height: 96,
-    borderRadius: 12,
     borderWidth: 4,
-    borderColor: 'white',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.25,
-    shadowRadius: 3.84,
-    elevation: 5,
-  },
-  studentImagePlaceholder: {
-    width: 96,
-    height: 96,
-    borderRadius: 12,
-    backgroundColor: '#e5e7eb',
-    borderWidth: 4,
-    borderColor: 'white',
-    justifyContent: 'center',
-    alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.25,
-    shadowRadius: 3.84,
-    elevation: 5,
-  },
-  studentInfo: {
-    marginLeft: 16,
-    flex: 1,
+    borderColor: '#10B981'
   },
   studentName: {
-    fontSize: 18,
+    fontSize: 20,
     fontWeight: 'bold',
-    color: '#1f2937',
-    marginBottom: 4,
+    color: '#111827',
+    textAlign: 'center',
+    marginBottom: 4
   },
-  studentMatric: {
+  matricNumber: {
     fontSize: 16,
+    color: '#3B82F6',
     fontWeight: '600',
-    color: '#6366f1',
-    marginBottom: 8,
+    marginBottom: 12
   },
-  studentBadges: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
+  badge: {
+    backgroundColor: '#EFF6FF',
+    paddingHorizontal: 16,
+    paddingVertical: 6,
+    borderRadius: 20,
+    marginBottom: 20
   },
-  levelBadge: {
-    backgroundColor: '#dbeafe',
-    paddingHorizontal: 12,
-    paddingVertical: 4,
-    borderRadius: 12,
-    marginRight: 8,
-    marginBottom: 4,
-  },
-  levelBadgeText: {
+  badgeText: {
+    color: '#3B82F6',
     fontSize: 12,
-    fontWeight: '600',
-    color: '#2563eb',
+    fontWeight: '600'
   },
-  methodBadge: {
-    backgroundColor: '#dcfce7',
-    paddingHorizontal: 12,
-    paddingVertical: 4,
+  detailsCard: {
+    width: '100%',
+    backgroundColor: '#F9FAFB',
     borderRadius: 12,
-    marginBottom: 4,
+    padding: 16,
+    marginBottom: 20
   },
-  methodBadgeText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#16a34a',
-  },
-  studentDetails: {
-    marginBottom: 16,
-  },
-  detailItem: {
-    backgroundColor: '#f9fafb',
-    padding: 12,
-    borderRadius: 12,
-    marginBottom: 8,
-  },
-  detailLabel: {
-    fontSize: 12,
-    color: '#6b7280',
-    marginBottom: 4,
-  },
-  detailValue: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#1f2937',
-  },
-  actionButtons: {
+  detailRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
+    marginBottom: 12
   },
-  allowButton: {
-    flex: 1,
-    backgroundColor: '#22c55e',
-    padding: 14,
-    borderRadius: 12,
-    marginRight: 8,
-    alignItems: 'center',
+  detailLabel: {
+    fontSize: 13,
+    color: '#6B7280',
+    fontWeight: '500'
   },
-  allowButtonText: {
-    color: 'white',
-    fontSize: 16,
+  detailValue: {
+    fontSize: 13,
     fontWeight: '600',
-  },
-  nextButton: {
+    color: '#111827',
     flex: 1,
-    backgroundColor: '#e5e7eb',
-    padding: 14,
-    borderRadius: 12,
-    marginLeft: 8,
-    alignItems: 'center',
-  },
-  nextButtonText: {
-    color: '#374151',
-    fontSize: 16,
-    fontWeight: '600',
-  },
+    textAlign: 'right'
+  }
 });

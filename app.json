@@ -12,6 +12,7 @@
     "ios": {
       "supportsTablet": true
     },
+    
     "android": {
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
@@ -54,6 +55,10 @@
       "eas": {
         "projectId": "978c0e82-1347-4740-8560-5f2e104a98e8"
       }
-    }
+    },
+    "assetBundlePatterns": [
+      "**/*",
+      "assets/models/**/*"
+    ]
   }
 }
