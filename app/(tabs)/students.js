@@ -1,34 +1,33 @@
-
-import { useState, useEffect, useRef } from 'react';
-import { 
-  View, 
-  Text, 
-  ScrollView, 
-  TouchableOpacity, 
-  TextInput, 
-  Alert,
-  ActivityIndicator,
-  StyleSheet,
-  Modal,
-  Image,
-  Platform
-} from 'react-native';
-import { useRouter } from 'expo-router';
-import { Ionicons, MaterialIcons, MaterialCommunityIcons } from '@expo/vector-icons';
-import * as ImagePicker from 'expo-image-picker';
-import { SafeAreaView } from "react-native-safe-area-context";
-import { NativeModules, NativeEventEmitter } from 'react-native';
-import * as FileSystem from 'expo-file-system';
 import {
   createStudent,
-  getAllStudents,
-  updateStudent,
   deleteStudent,
-  saveFingerprintsPNG,
-  getStudentStats,
   generateDepartmentCode,
-  getStudentsWithFingerprintsPNG
+  getAllStudents,
+  getStudentStats,
+  getStudentsWithFingerprintsPNG,
+  saveFingerprintsPNG,
+  updateStudent
 } from '@/lib/appwrite';
+import { Ionicons, MaterialCommunityIcons, MaterialIcons } from '@expo/vector-icons';
+import * as ImagePicker from 'expo-image-picker';
+import { useRouter } from 'expo-router';
+import { useEffect, useRef, useState } from 'react';
+import {
+  ActivityIndicator,
+  Alert,
+  Image,
+  Modal,
+  NativeEventEmitter,
+  NativeModules,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View
+} from 'react-native';
+import { SafeAreaView } from "react-native-safe-area-context";
 
 const { FingerprintModule } = NativeModules;
 const fingerprintEmitter = FingerprintModule ? new NativeEventEmitter(FingerprintModule) : null;
@@ -301,57 +300,71 @@ export default function StudentManagement() {
     );
   };
 
-  const openFingerprintModal = async (student) => {
-    setSelectedStudent(student);
-    setShowFingerprintModal(true);
-    setCurrentFingerIndex(0);
-    setCapturedFingers({});
-    setCaptureStatus(null);
-    setScannerStatus({ ready: false, message: null, type: null });
+ const openFingerprintModal = async (student) => {
+  setSelectedStudent(student);
+  setShowFingerprintModal(true);
+  setCurrentFingerIndex(0);
+  setCapturedFingers({});
+  setCaptureStatus(null);
+  
+  // Reset scanner status to loading state
+  setScannerStatus({ ready: false, message: 'Initializing scanner...', type: 'info' });
 
-    // Check if FingerprintModule is available
-    if (!FingerprintModule) {
+  // Check if FingerprintModule is available
+  if (!FingerprintModule) {
+    setScannerStatus({ 
+      ready: false, 
+      message: 'Fingerprint scanner module not available. Please ensure native module is properly installed.', 
+      type: 'error' 
+    });
+    return;
+  }
+
+  try {
+    // Always check availability when opening modal (don't trust cached state)
+    console.log('🔍 Checking scanner availability...');
+    const availability = await FingerprintModule.isAvailable();
+    
+    if (!availability.available) {
       setScannerStatus({ 
         ready: false, 
-        message: 'Fingerprint scanner module not available. Please ensure native module is properly installed.', 
+        message: 'Scanner not connected. Please connect DigitalPersona scanner via OTG.', 
         type: 'error' 
       });
       return;
     }
 
-    // Only initialize if not already initialized
-    if (scannerInitializedRef.current) {
-      setScannerStatus({ ready: true, message: 'Scanner ready! Click "Capture" to begin.', type: 'success' });
-      return;
+    // Initialize scanner (even if previously initialized, reinitialize for safety)
+    console.log('🔧 Initializing scanner...');
+    const initResult = await FingerprintModule.initialize();
+    
+    if (initResult.success) {
+      scannerInitializedRef.current = true;
+      setScannerStatus({ 
+        ready: true, 
+        message: 'Scanner ready! Click "Capture" to begin.', 
+        type: 'success' 
+      });
+      console.log('✅ Scanner initialized successfully');
+    } else {
+      scannerInitializedRef.current = false;
+      setScannerStatus({ 
+        ready: false, 
+        message: initResult.message || 'Failed to initialize scanner. Please try reconnecting the device.', 
+        type: 'error' 
+      });
+      console.error('❌ Scanner initialization failed:', initResult.message);
     }
-
-    try {
-      // Check scanner availability
-      const availability = await FingerprintModule.isAvailable();
-      
-      if (!availability.available) {
-        setScannerStatus({ 
-          ready: false, 
-          message: 'Scanner not connected. Please connect DigitalPersona scanner via OTG.', 
-          type: 'error' 
-        });
-        return;
-      }
-
-      // Initialize scanner
-      const initResult = await FingerprintModule.initialize();
-      
-      if (initResult.success) {
-        scannerInitializedRef.current = true;
-        setScannerStatus({ ready: true, message: 'Scanner ready! Click "Capture" to begin.', type: 'success' });
-      } else {
-        setScannerStatus({ ready: false, message: initResult.message || 'Failed to initialize scanner', type: 'error' });
-      }
-    } catch (error) {
-      console.error('Scanner initialization error:', error);
-      setScannerStatus({ ready: false, message: error.message, type: 'error' });
-    }
-  };
+  } catch (error) {
+    console.error('❌ Scanner initialization error:', error);
+    scannerInitializedRef.current = false;
+    setScannerStatus({ 
+      ready: false, 
+      message: `Error: ${error.message}. Please reconnect the scanner and try again.`, 
+      type: 'error' 
+    });
+  }
+};
 
   const handleCaptureFinger = async () => {
     if (!scannerStatus.ready) {
@@ -802,8 +815,6 @@ export default function StudentManagement() {
               </TouchableOpacity>
             </View>
           </View>
-
-
           {/* Students List */}
           <View style={styles.studentsCard}>
             {filteredStudents.length === 0 ? (
@@ -1100,16 +1111,58 @@ export default function StudentManagement() {
               </View>
             </View>
 
-            {/* Scanner Status */}
-            {!scannerReady && !captureStatus && (
-              <View style={styles.scannerInitializing}>
-                <ActivityIndicator size="large" color="#6366f1" />
-                <Text style={styles.scannerInitializingText}>Initializing scanner...</Text>
-              </View>
-            )}
+            {/* Scanner Status - Shows errors/warnings */}
+{scannerStatus.message && !scannerStatus.ready && (
+  <View style={[
+    styles.scannerStatusBox,
+    { 
+      borderColor: scannerStatus.type === 'error' ? '#ef4444' : '#f59e0b',
+      backgroundColor: scannerStatus.type === 'error' ? '#fef2f2' : '#fef3c7'
+    }
+  ]}>
+    <Ionicons 
+      name={scannerStatus.type === 'error' ? 'alert-circle' : 'warning'} 
+      size={32} 
+      color={scannerStatus.type === 'error' ? '#dc2626' : '#ca8a04'} 
+      style={{ marginBottom: 8 }}
+    />
+    <Text style={[
+      styles.scannerStatusText, 
+      { color: scannerStatus.type === 'error' ? '#991b1b' : '#92400e' }
+    ]}>
+      {scannerStatus.message}
+    </Text>
+    
+    {/* Retry button - only show for errors */}
+    {scannerStatus.type === 'error' && (
+      <TouchableOpacity
+        style={{
+          marginTop: 12,
+          backgroundColor: '#ef4444',
+          paddingHorizontal: 20,
+          paddingVertical: 10,
+          borderRadius: 8,
+        }}
+        onPress={() => openFingerprintModal(selectedStudent)}
+      >
+        <Text style={{ color: 'white', fontSize: 14, fontWeight: '600' }}>
+          Retry Connection
+        </Text>
+      </TouchableOpacity>
+    )}
+  </View>
+)}
+
+{/* Scanner Status - Shows loading when initializing */}
+{!scannerStatus.ready && !scannerStatus.message && (
+  <View style={styles.scannerInitializing}>
+    <ActivityIndicator size="large" color="#6366f1" />
+    <Text style={styles.scannerInitializingText}>Initializing scanner...</Text>
+  </View>
+)}
 
             {/* Current Finger */}
-            {capturedCount < 5 && scannerReady && (
+            {capturedCount < 5 && scannerStatus.ready && (
               <View style={styles.currentFingerSection}>
                 <Text style={styles.fingerEmoji}>{fingers[currentFingerIndex].icon}</Text>
                 <Text style={styles.fingerLabel}>{fingers[currentFingerIndex].label}</Text>
@@ -2007,4 +2060,28 @@ const styles = StyleSheet.create({
     color: '#6366f1',
     fontWeight: '600',
   },
+  scannerStatusBox: {
+    padding: 16,
+    borderRadius: 12,
+    borderWidth: 2,
+    marginBottom: 20,
+    alignItems: 'center'
+  },
+  scannerStatusText: {
+    fontSize: 14,
+    fontWeight: '600',
+    textAlign: 'center'
+  },
+  retryButton: {
+  marginTop: 12,
+  backgroundColor: '#ef4444',
+  paddingHorizontal: 20,
+  paddingVertical: 10,
+  borderRadius: 8,
+},
+retryButtonText: {
+  color: 'white',
+  fontSize: 14,
+  fontWeight: '600',
+},
 });
