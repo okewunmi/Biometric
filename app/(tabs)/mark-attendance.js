@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -8,35 +8,52 @@ import {
   Alert,
   ActivityIndicator,
   ScrollView,
-  Dimensions
+  FlatList,
+  Modal
 } from 'react-native';
-import { Camera } from 'expo-camera';
 import { NativeModules, NativeEventEmitter } from 'react-native';
-import * as FileSystem from 'expo-file-system';
+import { 
+  getCoursesWithRegisteredStudents,
+  createAttendanceSession,
+  closeAttendanceSession,
+  getSessionAttendanceReport,
+  getStudentsForCourse,
+  getStudentsWithFingerprintsPNG,
+  databases,
+  config
+} from '@/lib/appwrite';
+import { Query, ID } from 'appwrite';
 
 const { FingerprintModule } = NativeModules;
 const fingerprintEmitter = FingerprintModule ? new NativeEventEmitter(FingerprintModule) : null;
 
-const { width } = Dimensions.get('window');
-
-// ⚠️ IMPORTANT: Replace with your actual server URL
 const API_BASE_URL = 'https://ftpv.appwrite.network/';
 
-export default function ExamVerificationScreen() {
-  const [verificationType, setVerificationType] = useState('');
+export default function AdminAttendanceInterface({ navigation }) {
+  // Core state
+  const [courses, setCourses] = useState([]);
+  const [selectedCourse, setSelectedCourse] = useState(null);
+  const [sessionType, setSessionType] = useState('signin');
+  const [activeSession, setActiveSession] = useState(null);
+  const [registeredStudents, setRegisteredStudents] = useState([]);
+  
+  // Verification state
   const [isVerifying, setIsVerifying] = useState(false);
   const [verificationResult, setVerificationResult] = useState(null);
-  const [cameraPermission, setCameraPermission] = useState(null);
-  const [progress, setProgress] = useState({ current: 0, total: 0 });
   const [status, setStatus] = useState({ message: '', type: '' });
-  const [errorMessage, setErrorMessage] = useState('');
-  const [scannerAvailable, setScannerAvailable] = useState(false);
+  const [progress, setProgress] = useState({ current: 0, total: 0 });
   
-  const cameraRef = useRef(null);
+  // UI state
+  const [attendanceLog, setAttendanceLog] = useState([]);
+  const [sessionReport, setSessionReport] = useState(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [scannerAvailable, setScannerAvailable] = useState(false);
 
+  // Initialize fingerprint scanner
   useEffect(() => {
     checkFingerprintScanner();
-    
+    loadCourses();
+
     // Setup fingerprint event listeners
     if (fingerprintEmitter) {
       const listeners = [
@@ -65,6 +82,13 @@ export default function ExamVerificationScreen() {
     }
   }, []);
 
+  // Load students when course is selected
+  useEffect(() => {
+    if (selectedCourse) {
+      loadRegisteredStudents();
+    }
+  }, [selectedCourse]);
+
   const checkFingerprintScanner = async () => {
     try {
       if (!FingerprintModule) {
@@ -85,121 +109,158 @@ export default function ExamVerificationScreen() {
       }
     } catch (error) {
       console.error('Scanner check error:', error);
+      setStatus({ message: 'Scanner unavailable', type: 'warning' });
     }
   };
 
-  const requestCameraPermission = async () => {
-    const { status } = await Camera.requestCameraPermissionsAsync();
-    setCameraPermission(status === 'granted');
-    return status === 'granted';
+  const loadCourses = async () => {
+    try {
+      console.log('Loading courses for attendance...');
+      const result = await getCoursesWithRegisteredStudents();
+      
+      if (result.success) {
+        console.log('Courses loaded:', result.data.length);
+        setCourses(result.data);
+        
+        if (result.data.length === 0) {
+          setStatus({
+            message: 'No courses with approved registrations found',
+            type: 'warning'
+          });
+        }
+      } else {
+        setStatus({
+          message: result.error || 'Failed to load courses',
+          type: 'error'
+        });
+      }
+    } catch (error) {
+      console.error('Error loading courses:', error);
+      setStatus({
+        message: 'Failed to load courses',
+        type: 'error'
+      });
+    } finally {
+      setIsLoading(false);
+    }
   };
 
-  /**
-   * Handle Face Verification - SERVER-SIDE ONLY
-   */
-  const handleFaceVerification = async () => {
-    // Check camera permission
-    if (!cameraPermission) {
-      const granted = await requestCameraPermission();
-      if (!granted) {
-        Alert.alert('Permission Denied', 'Camera access is required for face verification');
+  const loadRegisteredStudents = async () => {
+    if (!selectedCourse) return;
+    
+    try {
+      console.log('Loading registered students for:', selectedCourse.courseCode);
+      const result = await getStudentsForCourse(selectedCourse.courseCode);
+      
+      if (result.success) {
+        console.log('Registered students loaded:', result.data.length);
+        setRegisteredStudents(result.data);
+      } else {
+        console.error('Failed to load students:', result.error);
+        setRegisteredStudents([]);
+      }
+    } catch (error) {
+      console.error('Error loading registered students:', error);
+      setRegisteredStudents([]);
+    }
+  };
+
+  const handleStartSession = async () => {
+    if (!selectedCourse) {
+      Alert.alert('Error', 'Please select a course first');
+      return;
+    }
+
+    if (sessionType === 'signout') {
+      const today = new Date().toISOString().split('T')[0];
+      
+      try {
+        const todayAttendance = await databases.listDocuments(
+          config.databaseId,
+          config.attendanceCollectionId,
+          [
+            Query.equal('courseCode', selectedCourse.courseCode),
+            Query.equal('attendanceDate', today),
+            Query.limit(20)
+          ]
+        );
+        
+        const pendingSignOuts = todayAttendance.documents.filter(record => {
+          const hasSignedIn = record.signInTime && record.signInStatus === 'Present';
+          const notSignedOut = !record.signOutTime;
+          return hasSignedIn && notSignedOut;
+        });
+        
+        if (pendingSignOuts.length === 0) {
+          Alert.alert(
+            'No Signed-In Students',
+            'No signed-in students found for today. Do you want to proceed with sign-out session anyway?',
+            [
+              { text: 'Cancel', onPress: () => setSessionType('signin'), style: 'cancel' },
+              { text: 'Proceed', onPress: () => startSession() }
+            ]
+          );
+          return;
+        } else {
+          setStatus({
+            message: `Found ${pendingSignOuts.length} student(s) pending sign-out`,
+            type: 'info'
+          });
+        }
+      } catch (error) {
+        console.error('Error checking attendance records:', error);
+        Alert.alert(
+          'Error',
+          'Error checking existing records. Do you want to proceed with sign-out session anyway?',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Proceed', onPress: () => startSession() }
+          ]
+        );
         return;
       }
     }
 
-    setIsVerifying(true);
-    setVerificationResult(null);
-    setProgress({ current: 0, total: 100 });
-    setErrorMessage('');
-    setStatus({ message: 'Preparing camera...', type: 'info' });
+    await startSession();
+  };
 
+  const startSession = async () => {
     try {
-      // Capture photo from camera
-      if (!cameraRef.current) {
-        throw new Error('Camera not ready');
+      const result = await createAttendanceSession(
+        selectedCourse.courseCode,
+        selectedCourse.courseTitle,
+        sessionType
+      );
+
+      if (result.success) {
+        setActiveSession(result.data);
+        setAttendanceLog([]);
+        await loadRegisteredStudents();
+        
+        setStatus({
+          message: `${sessionType === 'signin' ? 'Sign-in' : 'Sign-out'} session started for ${selectedCourse.courseCode}`,
+          type: 'success'
+        });
+      } else {
+        setStatus({
+          message: result.error || 'Failed to start session',
+          type: 'error'
+        });
       }
-
-      setStatus({ message: 'Capturing face...', type: 'info' });
-      setProgress({ current: 20, total: 100 });
-
-      const photo = await cameraRef.current.takePictureAsync({
-        quality: 0.95,
-        base64: true // Need base64 for server upload
+    } catch (error) {
+      setStatus({
+        message: error.message || 'Failed to start session',
+        type: 'error'
       });
-
-      setProgress({ current: 40, total: 100 });
-
-      // Send image to server for processing
-      setStatus({ message: 'Sending to server for analysis...', type: 'info' });
-
-      const response = await fetch(`${API_BASE_URL}/api/verify-face`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          image: `data:image/jpeg;base64,${photo.base64}`
-        })
-      });
-
-      setProgress({ current: 90, total: 100 });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.message || 'Verification failed');
-      }
-
-      const result = await response.json();
-      setProgress({ current: 100, total: 100 });
-
-      handleVerificationResult(result);
-
-    } catch (err) {
-      console.error('❌ Face verification error:', err);
-      setErrorMessage(err.message);
-      setStatus({ message: err.message || 'Verification failed', type: 'error' });
-      setVerificationResult({ 
-        matched: false, 
-        message: err.message || 'Verification failed' 
-      });
-    } finally {
-      setIsVerifying(false);
-      setTimeout(() => {
-        setProgress({ current: 0, total: 0 });
-      }, 1000);
     }
   };
 
-  /**
-   * Handle verification result from server
-   */
-  const handleVerificationResult = (result) => {
-    if (result.success && result.matched) {
-      // Match found!
-      setVerificationResult({
-        matched: true,
-        student: result.student,
-        confidence: result.confidence,
-        distance: result.distance,
-        matchTime: new Date().toLocaleTimeString(),
-        verificationType: 'Face Recognition'
-      });
-      setStatus({ message: 'Match found!', type: 'success' });
-    } else {
-      // No match
-      setVerificationResult({
-        matched: false,
-        message: result.message || 'No matching student found',
-        bestDistance: result.bestDistance
-      });
-      setStatus({ message: 'No match found', type: 'error' });
+  const handleScanFingerprint = async () => {
+    if (!activeSession) {
+      Alert.alert('Error', 'Please start a session first');
+      return;
     }
-  };
 
-  /**
-   * Handle Fingerprint Verification
-   */
-  const handleFingerprintVerification = async () => {
     if (!FingerprintModule || !scannerAvailable) {
       Alert.alert(
         'Scanner Not Available',
@@ -208,22 +269,33 @@ export default function ExamVerificationScreen() {
       return;
     }
 
+    if (registeredStudents.length === 0) {
+      Alert.alert('Error', 'No registered students found for this course');
+      return;
+    }
+
     setIsVerifying(true);
     setVerificationResult(null);
     setProgress({ current: 0, total: 0 });
-    setErrorMessage('');
-    setStatus({ message: 'Place your finger on the scanner...', type: 'info' });
+    setStatus({ 
+      message: `Place finger on scanner for ${sessionType === 'signin' ? 'SIGN IN' : 'SIGN OUT'}...`, 
+      type: 'info' 
+    });
 
     try {
+      // Step 1: Capture fingerprint
+      console.log('🔍 Starting NBIS verification process...');
       const captureResult = await FingerprintModule.capturePrint({});
 
       if (!captureResult.success) {
         throw new Error(captureResult.message || 'Scan failed');
       }
 
+      console.log('✅ Fingerprint captured, quality:', captureResult.quality + '%');
+      
       if (captureResult.quality && captureResult.quality < 50) {
         setStatus({ 
-          message: `Quality too low (${captureResult.quality}%). Please try again.`, 
+          message: `Quality too low (${captureResult.quality}%). Please try again with a cleaner finger.`, 
           type: 'warning' 
         });
         setIsVerifying(false);
@@ -234,52 +306,155 @@ export default function ExamVerificationScreen() {
       await verifyFingerprintWithServer(captureResult.imageData);
 
     } catch (error) {
+      console.error('❌ Verification error:', error);
       setStatus({ message: error.message || 'Verification failed', type: 'error' });
-      setErrorMessage(error.message);
-      setVerificationResult({ 
-        matched: false, 
-        message: 'Error: ' + error.message 
+      setVerificationResult({
+        matched: false,
+        message: 'Error: ' + error.message
       });
     } finally {
       setIsVerifying(false);
+      setProgress({ current: 0, total: 0 });
       if (FingerprintModule?.close) {
         await FingerprintModule.close();
       }
     }
   };
 
-  /**
-   * Verify fingerprint with NBIS server
-   */
   const verifyFingerprintWithServer = async (imageData) => {
     try {
-      setStatus({ message: 'Sending to server...', type: 'info' });
+      setStatus({ message: 'Loading database...', type: 'info' });
 
+      // Get all stored fingerprints
+      const fingerprintsResult = await getStudentsWithFingerprintsPNG();
+
+      if (!fingerprintsResult.success) {
+        throw new Error('Failed to fetch stored fingerprints: ' + fingerprintsResult.error);
+      }
+
+      if (fingerprintsResult.data.length === 0) {
+        setVerificationResult({
+          matched: false,
+          message: 'No registered fingerprints found in database'
+        });
+        setStatus({ message: 'No registered fingerprints', type: 'warning' });
+        setIsVerifying(false);
+        return;
+      }
+
+      const totalFingerprints = fingerprintsResult.data.length;
+      console.log(`📊 Database size: ${totalFingerprints} fingerprints`);
+      
+      setProgress({ current: 0, total: totalFingerprints });
+      setStatus({ 
+        message: `Comparing against ${totalFingerprints} fingerprints using NBIS...`, 
+        type: 'info' 
+      });
+
+      // Use optimized batch comparison via NBIS
       const response = await fetch(`${API_BASE_URL}/api/fingerprint/verify-batch`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          queryImage: imageData
+          queryImage: imageData,
+          database: fingerprintsResult.data.map(fp => ({
+            id: fp.fileId,
+            studentId: fp.student.$id,
+            matricNumber: fp.student.matricNumber,
+            studentName: `${fp.student.firstName} ${fp.student.surname}`,
+            fingerName: fp.fingerName,
+            imageData: fp.imageData,
+            student: fp.student
+          }))
         })
       });
 
       if (!response.ok) {
-        throw new Error(`Server error: ${response.status}`);
+        throw new Error(`Verification failed: ${response.status}`);
       }
 
       const result = await response.json();
 
+      // Handle result
       if (result.success && result.matched && result.bestMatch) {
-        setVerificationResult({
-          matched: true,
-          student: result.bestMatch.student,
-          confidence: result.bestMatch.confidence,
-          score: result.bestMatch.score,
-          fingerName: result.bestMatch.fingerName,
-          verificationType: 'Fingerprint (NBIS)'
-        });
-        setStatus({ message: 'Match found!', type: 'success' });
+        const student = result.bestMatch.student;
+
+        // Check if student is registered for this course
+        const isRegistered = registeredStudents.find(
+          s => s.matricNumber === student.matricNumber
+        );
+
+        if (!isRegistered) {
+          setVerificationResult({
+            matched: false,
+            message: `${student.firstName} ${student.surname} (${student.matricNumber}) is not registered for ${activeSession.courseCode}`
+          });
+          setStatus({ message: 'Student not registered for this course', type: 'error' });
+          setIsVerifying(false);
+          return;
+        }
+
+        console.log('\n✅ === MATCH FOUND (NBIS) ===');
+        console.log('Student:', result.bestMatch.studentName);
+        console.log('NBIS Score:', result.bestMatch.score);
+        console.log('============================\n');
+
+        // Mark attendance in database
+        const markResult = await markAttendanceInSession(
+          activeSession.$id,
+          student,
+          sessionType,
+          result.bestMatch.fingerName,
+          selectedCourse.courseId 
+        );
+
+        if (markResult.success) {
+          setVerificationResult({
+            matched: true,
+            student: student,
+            confidence: result.bestMatch.confidence,
+            score: result.bestMatch.score,
+            fingerName: result.bestMatch.fingerName,
+            action: sessionType,
+            message: `${student.firstName} ${student.surname} ${sessionType === 'signin' ? 'signed in' : 'signed out'} successfully`
+          });
+          setStatus({ message: 'Attendance marked successfully!', type: 'success' });
+
+          // Add to log
+          setAttendanceLog(prev => [{
+            timestamp: new Date().toLocaleTimeString(),
+            student: student,
+            action: sessionType,
+            fingerUsed: result.bestMatch.fingerName,
+            confidence: result.bestMatch.confidence,
+            score: result.bestMatch.score
+          }, ...prev]);
+
+          // Update session count
+          setActiveSession(prev => ({
+            ...prev,
+            totalStudentsMarked: prev.totalStudentsMarked + 1
+          }));
+
+          // Auto-clear after 3 seconds
+          setTimeout(() => {
+            setVerificationResult(null);
+            setStatus({ message: 'Ready for next student', type: 'info' });
+          }, 3000);
+
+        } else {
+          setVerificationResult({
+            matched: false,
+            message: markResult.error || 'Failed to mark attendance'
+          });
+          setStatus({ message: markResult.error || 'Failed to mark attendance', type: 'error' });
+        }
+
       } else {
+        console.log('\n❌ === NO MATCH FOUND (NBIS) ===');
+        console.log('Best score:', result.bestMatch?.score || 0);
+        console.log('================================\n');
+
         setVerificationResult({
           matched: false,
           message: `No match found. Best score: ${result.bestMatch?.score || 0}`,
@@ -287,35 +462,227 @@ export default function ExamVerificationScreen() {
         });
         setStatus({ message: 'No match found', type: 'error' });
       }
+
     } catch (error) {
       console.error('❌ Verification error:', error);
       setStatus({ message: error.message || 'Verification failed', type: 'error' });
-      setErrorMessage(error.message);
-      setVerificationResult({ 
-        matched: false, 
-        message: 'Error: ' + error.message 
+      setVerificationResult({
+        matched: false,
+        message: 'Error: ' + error.message
       });
     }
   };
 
-  const handleAllowEntry = () => {
-    if (!verificationResult?.student) return;
+  const markAttendanceInSession = async (sessionId, student, type, fingerUsed, courseId) => {
+    try {
+      const timestamp = new Date().toISOString();
+      const date = timestamp.split('T')[0];
+
+      const sanitizedCourseId = String(courseId || '').trim().substring(0, 150);
+      
+      if (!sanitizedCourseId) {
+        return {
+          success: false,
+          error: 'Course ID is required'
+        };
+      }
+
+      // Check for attendance record by date and course
+      const existingRecords = await databases.listDocuments(
+        config.databaseId,
+        config.attendanceCollectionId,
+        [
+          Query.equal('matricNumber', student.matricNumber),
+          Query.equal('courseCode', activeSession.courseCode),
+          Query.equal('attendanceDate', date),
+          Query.limit(1)
+        ]
+      );
+
+      if (existingRecords.documents.length > 0) {
+        // Record exists
+        const record = existingRecords.documents[0];
+        
+        if (type === 'signin') {
+          // PREVENT MULTIPLE SIGN-INS
+          if (record.signInTime && record.signInStatus === 'Present') {
+            return {
+              success: false,
+              error: `${student.firstName} ${student.surname} already signed in at ${new Date(record.signInTime).toLocaleTimeString()}. Cannot sign in twice.`
+            };
+          }
+          
+          // Update sign-in time
+          await databases.updateDocument(
+            config.databaseId,
+            config.attendanceCollectionId,
+            record.$id,
+            {
+              signInTime: timestamp,
+              signInFingerUsed: fingerUsed,
+              signInStatus: 'Present',
+              sessionId: sessionId
+            }
+          );
+          
+          return {
+            success: true,
+            message: `${student.firstName} ${student.surname} signed in successfully`
+          };
+          
+        } else if (type === 'signout') {
+          // PREVENT SIGN-OUT WITHOUT SIGN-IN
+          if (!record.signInTime || record.signInStatus !== 'Present') {
+            return {
+              success: false,
+              error: `${student.firstName} ${student.surname} has not signed in yet. Please sign in first before signing out.`
+            };
+          }
+          
+          // PREVENT MULTIPLE SIGN-OUTS
+          if (record.signOutTime && record.signOutStatus === 'Completed') {
+            return {
+              success: false,
+              error: `${student.firstName} ${student.surname} already signed out at ${new Date(record.signOutTime).toLocaleTimeString()}. Cannot sign out twice.`
+            };
+          }
+          
+          // Calculate duration
+          const signInTime = new Date(record.signInTime);
+          const signOutTime = new Date(timestamp);
+          const durationMinutes = Math.floor((signOutTime - signInTime) / (1000 * 60));
+          
+          // Update sign-out time
+          await databases.updateDocument(
+            config.databaseId,
+            config.attendanceCollectionId,
+            record.$id,
+            {
+              signOutTime: timestamp,
+              signOutFingerUsed: fingerUsed,
+              signOutStatus: 'Completed',
+              totalDuration: durationMinutes
+            }
+          );
+          
+          return {
+            success: true,
+            message: `${student.firstName} ${student.surname} signed out successfully (${formatDuration(durationMinutes)})`
+          };
+        }
+        
+      } else {
+        // No record exists - only allow creating for sign-in
+        if (type === 'signin') {
+          await databases.createDocument(
+            config.databaseId,
+            config.attendanceCollectionId,
+            ID.unique(),
+            {
+              sessionId: sessionId,
+              studentId: student.$id,
+              matricNumber: student.matricNumber,
+              courseId: sanitizedCourseId,
+              courseCode: activeSession.courseCode,
+              courseTitle: activeSession.courseTitle,
+              attendanceDate: date,
+              signInTime: timestamp,
+              signInFingerUsed: fingerUsed,
+              signInStatus: 'Present',
+              signOutTime: null,
+              signOutFingerUsed: '',
+              signOutStatus: null,
+              totalDuration: 0,
+              isActive: true,
+              semester: activeSession.semester,
+              academicYear: activeSession.academicYear
+            }
+          );
+          
+          return {
+            success: true,
+            message: `${student.firstName} ${student.surname} signed in successfully`
+          };
+          
+        } else if (type === 'signout') {
+          return {
+            success: false,
+            error: `${student.firstName} ${student.surname} has not signed in yet. Please sign in first.`
+          };
+        }
+      }
+
+      return { success: false, error: 'Unknown error occurred' };
+
+    } catch (error) {
+      console.error('Error marking attendance:', error);
+      return { success: false, error: error.message };
+    }
+  };
+
+  const formatDuration = (minutes) => {
+    if (!minutes) return '0 min';
+    
+    if (minutes < 60) {
+      return `${minutes} min${minutes !== 1 ? 's' : ''}`;
+    }
+    
+    const hours = Math.floor(minutes / 60);
+    const mins = minutes % 60;
+    
+    return `${hours}h ${mins}m`;
+  };
+
+  const handleCloseSession = async () => {
+    if (!activeSession) return;
+
     Alert.alert(
-      'Check-in Successful',
-      `${verificationResult.student.firstName} ${verificationResult.student.surname} has been verified and checked in!`,
+      'Close Session',
+      'Are you sure you want to close this session?',
       [
-        { text: 'OK', onPress: resetVerification }
+        { text: 'Cancel', style: 'cancel' },
+        { 
+          text: 'Close', 
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              const result = await closeAttendanceSession(activeSession.$id);
+              
+              if (result.success) {
+                const reportResult = await getSessionAttendanceReport(activeSession.$id);
+                if (reportResult.success) {
+                  setSessionReport(reportResult);
+                }
+                
+                setActiveSession(null);
+                setRegisteredStudents([]);
+                setVerificationResult(null);
+                setStatus({
+                  message: 'Session closed successfully',
+                  type: 'success'
+                });
+              }
+            } catch (error) {
+              setStatus({
+                message: error.message || 'Failed to close session',
+                type: 'error'
+              });
+            }
+          }
+        }
       ]
     );
   };
 
-  const resetVerification = () => {
+  const handleNewSession = () => {
+    setActiveSession(null);
+    setSelectedCourse(null);
+    setSessionType('signin');
+    setAttendanceLog([]);
     setVerificationResult(null);
-    setVerificationType('');
-    setIsVerifying(false);
-    setErrorMessage('');
-    setStatus({ message: '', type: '' });
-    setProgress({ current: 0, total: 0 });
+    setSessionReport(null);
+    setRegisteredStudents([]);
+    setStatus({ message: 'Ready to start new session', type: 'info' });
   };
 
   const getStatusColor = () => {
@@ -327,78 +694,134 @@ export default function ExamVerificationScreen() {
     }
   };
 
-  // Render verification result (SUCCESS)
-  if (verificationResult?.matched) {
+  if (isLoading) {
+    return (
+      <View style={styles.loadingContainer}>
+        <ActivityIndicator size="large" color="#6366F1" />
+        <Text style={styles.loadingText}>Loading...</Text>
+      </View>
+    );
+  }
+
+  // Session Report View
+  if (sessionReport) {
     return (
       <ScrollView style={styles.container}>
-        <View style={styles.resultCard}>
-          <Text style={styles.successEmoji}>✅</Text>
-          <Text style={styles.successTitle}>Match Found!</Text>
-          <Text style={styles.confidence}>
-            Confidence: {verificationResult.confidence}%
-          </Text>
+        <View style={styles.header}>
+          <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton}>
+            <Text style={styles.backButtonText}>← Back</Text>
+          </TouchableOpacity>
+          <Text style={styles.title}>Session Report</Text>
+        </View>
 
-          {verificationResult.student.profilePictureUrl && (
-            <Image
-              source={{ uri: verificationResult.student.profilePictureUrl }}
-              style={styles.profileImage}
-            />
-          )}
-
-          <Text style={styles.studentName}>
-            {verificationResult.student.firstName} {verificationResult.student.middleName} {verificationResult.student.surname}
-          </Text>
-          <Text style={styles.matricNumber}>
-            {verificationResult.student.matricNumber}
-          </Text>
-
-          <View style={styles.badge}>
-            <Text style={styles.badgeText}>{verificationResult.verificationType}</Text>
-          </View>
-
-          <View style={styles.detailsCard}>
-            <View style={styles.detailRow}>
-              <Text style={styles.detailLabel}>Level</Text>
-              <Text style={styles.detailValue}>{verificationResult.student.level}</Text>
+        <View style={styles.reportCard}>
+          <View style={styles.statsGrid}>
+            <View style={[styles.statBox, { backgroundColor: '#EEF2FF' }]}>
+              <Text style={styles.statLabel}>Total Students</Text>
+              <Text style={[styles.statValue, { color: '#6366F1' }]}>
+                {sessionReport.stats.totalStudents}
+              </Text>
             </View>
-            <View style={styles.detailRow}>
-              <Text style={styles.detailLabel}>Department</Text>
-              <Text style={styles.detailValue}>{verificationResult.student.department}</Text>
+            <View style={[styles.statBox, { backgroundColor: '#ECFDF5' }]}>
+              <Text style={styles.statLabel}>Present</Text>
+              <Text style={[styles.statValue, { color: '#10B981' }]}>
+                {sessionReport.stats.present}
+              </Text>
             </View>
-            <View style={styles.detailRow}>
-              <Text style={styles.detailLabel}>Course</Text>
-              <Text style={styles.detailValue}>{verificationResult.student.course}</Text>
+            <View style={[styles.statBox, { backgroundColor: '#FEE2E2' }]}>
+              <Text style={styles.statLabel}>Absent</Text>
+              <Text style={[styles.statValue, { color: '#EF4444' }]}>
+                {sessionReport.stats.absent}
+              </Text>
+            </View>
+            <View style={[styles.statBox, { backgroundColor: '#F3E8FF' }]}>
+              <Text style={styles.statLabel}>Rate</Text>
+              <Text style={[styles.statValue, { color: '#A855F7' }]}>
+                {sessionReport.stats.attendanceRate}%
+              </Text>
             </View>
           </View>
 
-          <View style={styles.buttonRow}>
-            <TouchableOpacity style={styles.allowButton} onPress={handleAllowEntry}>
-              <Text style={styles.buttonText}>✓ Allow Entry</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.resetButton} onPress={resetVerification}>
-              <Text style={styles.resetButtonText}>Next Student</Text>
-            </TouchableOpacity>
-          </View>
+          <FlatList
+            data={sessionReport.report}
+            keyExtractor={(item, idx) => idx.toString()}
+            renderItem={({ item }) => (
+              <View style={[
+                styles.reportItem,
+                { backgroundColor: item.attended ? '#F0FDF4' : '#FEE2E2' }
+              ]}>
+                <View style={styles.reportItemContent}>
+                  <Text style={styles.reportMatric}>{item.student.matricNumber}</Text>
+                  <Text style={styles.reportName}>
+                    {item.student.firstName} {item.student.surname}
+                  </Text>
+                  <View style={styles.reportTimes}>
+                    <Text style={styles.reportTimeText}>
+                      In: {item.signInTime ? new Date(item.signInTime).toLocaleTimeString() : '-'}
+                    </Text>
+                    <Text style={styles.reportTimeText}>
+                      Out: {item.signOutTime ? new Date(item.signOutTime).toLocaleTimeString() : '-'}
+                    </Text>
+                  </View>
+                </View>
+                <View style={[
+                  styles.statusBadge,
+                  { backgroundColor: item.attended ? '#10B981' : '#EF4444' }
+                ]}>
+                  <Text style={styles.statusBadgeText}>
+                    {item.attended ? 'Present' : 'Absent'}
+                  </Text>
+                </View>
+              </View>
+            )}
+          />
+
+          <TouchableOpacity style={styles.newSessionButton} onPress={handleNewSession}>
+            <Text style={styles.newSessionButtonText}>Start New Session</Text>
+          </TouchableOpacity>
         </View>
       </ScrollView>
     );
   }
 
-  // Render main verification interface
+  // No courses view
+  if (courses.length === 0) {
+    return (
+      <View style={styles.container}>
+        <View style={styles.header}>
+          <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton}>
+            <Text style={styles.backButtonText}>← Back</Text>
+          </TouchableOpacity>
+          <Text style={styles.title}>Mark Attendance</Text>
+        </View>
+        <View style={styles.emptyState}>
+          <Text style={styles.emptyEmoji}>⚠️</Text>
+          <Text style={styles.emptyTitle}>No Courses Available</Text>
+          <Text style={styles.emptyText}>
+            No courses with approved student registrations found.
+          </Text>
+        </View>
+      </View>
+    );
+  }
+
+  // Main interface
   return (
     <ScrollView style={styles.container}>
       <View style={styles.header}>
-        <Text style={styles.title}>🔐 Student Verification</Text>
-        <Text style={styles.subtitle}>Verify identity using biometric authentication</Text>
+        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton}>
+          <Text style={styles.backButtonText}>← Back</Text>
+        </TouchableOpacity>
+        <Text style={styles.title}>📋 Mark Attendance</Text>
+        <Text style={styles.subtitle}>
+          NBIS fingerprint verification system
+          {activeSession && registeredStudents.length > 0 && (
+            <Text style={styles.registeredCount}> • {registeredStudents.length} registered</Text>
+          )}
+        </Text>
       </View>
 
-      {errorMessage ? (
-        <View style={styles.errorCard}>
-          <Text style={styles.errorIcon}>⚠️</Text>
-          <Text style={styles.errorText}>{errorMessage}</Text>
-        </View>
-      ) : null}
-
+      {/* Status Display */}
       {status.message ? (
         <View style={[styles.statusCard, { backgroundColor: getStatusColor() + '20' }]}>
           <Text style={[styles.statusText, { color: getStatusColor() }]}>
@@ -408,102 +831,262 @@ export default function ExamVerificationScreen() {
         </View>
       ) : null}
 
+      {/* Progress Bar */}
       {progress.total > 0 && isVerifying && (
         <View style={styles.progressContainer}>
           <View style={styles.progressBar}>
-            <View style={[styles.progressFill, { width: `${progress.current}%` }]} />
+            <View 
+              style={[
+                styles.progressFill, 
+                { width: `${(progress.current / progress.total) * 100}%` }
+              ]} 
+            />
           </View>
-          <Text style={styles.progressText}>{progress.current}%</Text>
+          <Text style={styles.progressText}>
+            {progress.current} / {progress.total}
+          </Text>
         </View>
       )}
 
-      <View style={styles.methodCard}>
-        <Text style={styles.cardTitle}>Select Verification Method</Text>
-        
-        <View style={styles.methodButtons}>
-          <TouchableOpacity
-            style={[
-              styles.methodButton,
-              verificationType === 'Fingerprint' && styles.methodButtonActive
-            ]}
-            onPress={() => setVerificationType('Fingerprint')}
-          >
-            <Text style={styles.methodEmoji}>👆</Text>
-            <Text style={styles.methodLabel}>Fingerprint</Text>
-            {scannerAvailable && (
-              <View style={styles.availableDot} />
-            )}
-          </TouchableOpacity>
+      {!activeSession ? (
+        /* Session Setup */
+        <View style={styles.setupCard}>
+          <Text style={styles.cardTitle}>Session Setup</Text>
 
-          <TouchableOpacity
-            style={[
-              styles.methodButton,
-              verificationType === 'Face' && styles.methodButtonActive
-            ]}
-            onPress={() => setVerificationType('Face')}
-          >
-            <Text style={styles.methodEmoji}>😊</Text>
-            <Text style={styles.methodLabel}>Face Recognition</Text>
-            <View style={styles.availableDot} />
-          </TouchableOpacity>
-        </View>
-
-        {verificationType === 'Face' && (
-          <View style={styles.cameraContainer}>
-            {cameraPermission ? (
-              <>
-                <Camera
-                  ref={cameraRef}
-                  style={styles.camera}
-                  type={Camera.Constants.Type.front}
-                />
-                <Text style={styles.cameraHint}>
-                  💡 Ensure good lighting and face the camera directly
-                </Text>
-              </>
-            ) : (
-              <TouchableOpacity 
-                style={styles.permissionButton}
-                onPress={requestCameraPermission}
-              >
-                <Text style={styles.permissionText}>📷 Grant Camera Permission</Text>
-              </TouchableOpacity>
-            )}
-          </View>
-        )}
-
-        {verificationType === 'Fingerprint' && (
-          <View style={styles.instructionsCard}>
-            <Text style={styles.instructionsTitle}>📋 Instructions:</Text>
-            <Text style={styles.instructionText}>1. Ensure finger is clean and dry</Text>
-            <Text style={styles.instructionText}>2. Place finger firmly on scanner</Text>
-            <Text style={styles.instructionText}>3. Do not move until complete</Text>
-            <Text style={styles.instructionText}>4. Use the same finger you registered</Text>
-          </View>
-        )}
-
-        <TouchableOpacity
-          style={[
-            styles.verifyButton,
-            (!verificationType || isVerifying) && styles.verifyButtonDisabled
-          ]}
-          onPress={verificationType === 'Face' ? handleFaceVerification : handleFingerprintVerification}
-          disabled={!verificationType || isVerifying}
-        >
-          {isVerifying ? (
-            <View style={styles.verifyingContent}>
-              <ActivityIndicator color="#fff" />
-              <Text style={styles.verifyButtonText}>
-                {verificationType === 'Face' ? 'Verifying face...' : 'Scanning fingerprint...'}
+          {sessionType === 'signout' && (
+            <View style={styles.noticeCard}>
+              <Text style={styles.noticeTitle}>⚠️ Sign-out Session Notice</Text>
+              <Text style={styles.noticeText}>
+                Students must have signed in earlier today to sign out.
               </Text>
             </View>
-          ) : (
-            <Text style={styles.verifyButtonText}>
-              {verificationType === 'Face' ? '📸 Capture & Verify' : '👆 Start Scan'}
-            </Text>
           )}
-        </TouchableOpacity>
-      </View>
+
+          {/* Course Selection */}
+          <Text style={styles.label}>Select Course *</Text>
+          <FlatList
+            data={courses}
+            keyExtractor={(item) => item.courseCode}
+            renderItem={({ item }) => (
+              <TouchableOpacity
+                style={[
+                  styles.courseItem,
+                  selectedCourse?.courseCode === item.courseCode && styles.courseItemSelected
+                ]}
+                onPress={() => setSelectedCourse(item)}
+              >
+                <View style={styles.courseContent}>
+                  <Text style={styles.courseCode}>{item.courseCode}</Text>
+                  <Text style={styles.courseTitle}>{item.courseTitle}</Text>
+                  <View style={styles.courseBadges}>
+                    <Text style={styles.courseBadge}>{item.courseUnit} Units</Text>
+                    <Text style={[styles.courseBadge, { backgroundColor: '#DCFCE7' }]}>
+                      {item.studentCount} Students
+                    </Text>
+                  </View>
+                </View>
+                {selectedCourse?.courseCode === item.courseCode && (
+                  <Text style={styles.checkmark}>✓</Text>
+                )}
+              </TouchableOpacity>
+            )}
+            scrollEnabled={false}
+          />
+
+          {/* Session Type */}
+          <Text style={styles.label}>Session Type *</Text>
+          <View style={styles.typeButtons}>
+            <TouchableOpacity
+              style={[
+                styles.typeButton,
+                sessionType === 'signin' && styles.typeButtonActive
+              ]}
+              onPress={() => setSessionType('signin')}
+            >
+              <Text style={styles.typeEmoji}>🔐</Text>
+              <Text style={[
+                styles.typeLabel,
+                sessionType === 'signin' && styles.typeLabelActive
+              ]}>
+                Sign In
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[
+                styles.typeButton,
+                sessionType === 'signout' && styles.typeButtonActive
+              ]}
+              onPress={() => setSessionType('signout')}
+            >
+              <Text style={styles.typeEmoji}>🚪</Text>
+              <Text style={[
+                styles.typeLabel,
+                sessionType === 'signout' && styles.typeLabelActive
+              ]}>
+                Sign Out
+              </Text>
+            </TouchableOpacity>
+          </View>
+
+          <TouchableOpacity
+            style={[
+              styles.startButton,
+              !selectedCourse && styles.startButtonDisabled
+            ]}
+            onPress={handleStartSession}
+            disabled={!selectedCourse}
+          >
+            <Text style={styles.startButtonText}>Start Attendance Session</Text>
+          </TouchableOpacity>
+        </View>
+      ) : (
+        /* Active Session */
+        <View style={styles.setupCard}>
+          <Text style={styles.cardTitle}>Active Session</Text>
+
+          <View style={styles.sessionInfo}>
+            <View style={styles.sessionRow}>
+              <Text style={styles.sessionLabel}>Course:</Text>
+              <Text style={styles.sessionValue}>{activeSession.courseCode}</Text>
+            </View>
+            <View style={styles.sessionRow}>
+              <Text style={styles.sessionLabel}>Type:</Text>
+              <Text style={[
+                styles.sessionValue,
+                { color: sessionType === 'signin' ? '#10B981' : '#F59E0B' }
+              ]}>
+                {sessionType === 'signin' ? 'Sign In' : 'Sign Out'}
+              </Text>
+            </View>
+            <View style={styles.sessionRow}>
+              <Text style={styles.sessionLabel}>Students Marked:</Text>
+              <Text style={[styles.sessionValue, { fontSize: 20, color: '#6366F1' }]}>
+                {activeSession.totalStudentsMarked}
+              </Text>
+            </View>
+            <View style={styles.sessionRow}>
+              <Text style={styles.sessionLabel}>Started:</Text>
+              <Text style={styles.sessionValue}>
+                {new Date(activeSession.sessionStartTime).toLocaleTimeString()}
+              </Text>
+            </View>
+          </View>
+
+          {/* Instructions */}
+          <View style={styles.instructionsCard}>
+            <Text style={styles.instructionsTitle}>📋 Scanning Tips:</Text>
+            <Text style={styles.instructionText}>• Ensure finger is clean and dry</Text>
+            <Text style={styles.instructionText}>• Place finger firmly and centered</Text>
+            <Text style={styles.instructionText}>• Do not move until scan completes</Text>
+            <Text style={styles.instructionText}>• Quality should be above 50%</Text>
+            <Text style={styles.nbisNote}>💡 Using NIST NBIS (BOZORTH3)</Text>
+          </View>
+
+          {/* Scan Button */}
+          <TouchableOpacity
+            style={[
+              styles.scanButton,
+              (isVerifying || !scannerAvailable) && styles.scanButtonDisabled
+            ]}
+            onPress={handleScanFingerprint}
+            disabled={isVerifying || !scannerAvailable}
+          >
+            {isVerifying ? (
+              <View style={styles.scanningContent}>
+                <ActivityIndicator color="#fff" />
+                <Text style={styles.scanButtonText}>Verifying...</Text>
+              </View>
+            ) : (
+              <Text style={styles.scanButtonText}>👆 Scan Student Fingerprint</Text>
+            )}
+          </TouchableOpacity>
+
+          {/* Verification Result */}
+          {verificationResult && (
+            <View style={[
+              styles.resultCard,
+              { backgroundColor: verificationResult.matched ? '#F0FDF4' : '#FEE2E2' }
+            ]}>
+              <Text style={styles.resultEmoji}>
+                {verificationResult.matched ? '✅' : '❌'}
+              </Text>
+              <Text style={[
+                styles.resultTitle,
+                { color: verificationResult.matched ? '#10B981' : '#EF4444' }
+              ]}>
+                {verificationResult.matched ? 'Success!' : 'Failed'}
+              </Text>
+              <Text style={styles.resultMessage}>{verificationResult.message}</Text>
+              {verificationResult.matched && (
+                <>
+                  <Text style={styles.resultDetail}>
+                    Confidence: {verificationResult.confidence}% • Score: {verificationResult.score}
+                  </Text>
+                  <Text style={styles.resultDetail}>
+                    Finger: {verificationResult.fingerName}
+                  </Text>
+                </>
+              )}
+            </View>
+          )}
+
+          {/* Close Session Button */}
+          <TouchableOpacity style={styles.closeButton} onPress={handleCloseSession}>
+            <Text style={styles.closeButtonText}>Close Session & View Report</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {/* Attendance Log */}
+      {activeSession && (
+        <View style={styles.logCard}>
+          <Text style={styles.cardTitle}>Attendance Log</Text>
+          {attendanceLog.length === 0 ? (
+            <View style={styles.emptyLog}>
+              <Text style={styles.emptyLogEmoji}>📋</Text>
+              <Text style={styles.emptyLogText}>No attendance marked yet</Text>
+            </View>
+          ) : (
+            <FlatList
+              data={attendanceLog}
+              keyExtractor={(item, idx) => idx.toString()}
+              renderItem={({ item }) => (
+                <View style={styles.logItem}>
+                  {item.student.profilePictureUrl && (
+                    <Image
+                      source={{ uri: item.student.profilePictureUrl }}
+                      style={styles.logImage}
+                    />
+                  )}
+                  <View style={styles.logContent}>
+                    <Text style={styles.logName}>
+                      {item.student.firstName} {item.student.surname}
+                    </Text>
+                    <Text style={styles.logMatric}>{item.student.matricNumber}</Text>
+                    <View style={styles.logBadges}>
+                      <Text style={[
+                        styles.logBadge,
+                        { backgroundColor: item.action === 'signin' ? '#DCFCE7' : '#FED7AA' }
+                      ]}>
+                        {item.action === 'signin' ? '✅ Signed In' : '🚪 Signed Out'}
+                      </Text>
+                      <Text style={[styles.logBadge, { backgroundColor: '#DBEAFE' }]}>
+                        {item.fingerUsed}
+                      </Text>
+                    </View>
+                    <Text style={styles.logDetails}>
+                      Confidence: {item.confidence}% • Score: {item.score}
+                    </Text>
+                  </View>
+                  <Text style={styles.logTime}>{item.timestamp}</Text>
+                </View>
+              )}
+              scrollEnabled={false}
+            />
+          )}
+        </View>
+      )}
     </ScrollView>
   );
 }
@@ -513,38 +1096,44 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#F3F4F6'
   },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#F3F4F6'
+  },
+  loadingText: {
+    marginTop: 12,
+    fontSize: 16,
+    color: '#6B7280'
+  },
   header: {
     padding: 20,
     backgroundColor: '#fff',
     borderBottomWidth: 1,
     borderBottomColor: '#E5E7EB'
   },
+  backButton: {
+    marginBottom: 12
+  },
+  backButtonText: {
+    color: '#6366F1',
+    fontSize: 16,
+    fontWeight: '600'
+  },
   title: {
-    fontSize: 24,
+    fontSize: 28,
     fontWeight: 'bold',
     color: '#111827',
-    marginBottom: 5
+    marginBottom: 4
   },
   subtitle: {
     fontSize: 14,
     color: '#6B7280'
   },
-  errorCard: {
-    margin: 16,
-    padding: 16,
-    backgroundColor: '#FEE2E2',
-    borderRadius: 12,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12
-  },
-  errorIcon: {
-    fontSize: 24
-  },
-  errorText: {
-    flex: 1,
-    color: '#DC2626',
-    fontSize: 14
+  registeredCount: {
+    color: '#6366F1',
+    fontWeight: '600'
   },
   statusCard: {
     margin: 16,
@@ -560,8 +1149,8 @@ const styles = StyleSheet.create({
     flex: 1
   },
   progressContainer: {
-    margin: 16,
-    marginTop: 0
+    marginHorizontal: 16,
+    marginBottom: 16
   },
   progressBar: {
     height: 8,
@@ -580,7 +1169,7 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#6B7280'
   },
-  methodCard: {
+  setupCard: {
     margin: 16,
     padding: 20,
     backgroundColor: '#fff',
@@ -597,78 +1186,147 @@ const styles = StyleSheet.create({
     color: '#111827',
     marginBottom: 16
   },
-  methodButtons: {
+  noticeCard: {
+    padding: 16,
+    backgroundColor: '#FFF7ED',
+    borderRadius: 12,
+    borderWidth: 2,
+    borderColor: '#FED7AA',
+    marginBottom: 16
+  },
+  noticeTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#EA580C',
+    marginBottom: 4
+  },
+  noticeText: {
+    fontSize: 13,
+    color: '#C2410C'
+  },
+  label: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#374151',
+    marginBottom: 12,
+    marginTop: 8
+  },
+  courseItem: {
+    padding: 16,
+    backgroundColor: '#F9FAFB',
+    borderRadius: 12,
+    borderWidth: 2,
+    borderColor: '#E5E7EB',
+    marginBottom: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between'
+  },
+  courseItemSelected: {
+    borderColor: '#6366F1',
+    backgroundColor: '#EEF2FF'
+  },
+  courseContent: {
+    flex: 1
+  },
+  courseCode: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#111827',
+    marginBottom: 4
+  },
+  courseTitle: {
+    fontSize: 13,
+    color: '#6B7280',
+    marginBottom: 8
+  },
+  courseBadges: {
+    flexDirection: 'row',
+    gap: 8
+  },
+  courseBadge: {
+    fontSize: 11,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    backgroundColor: '#DBEAFE',
+    color: '#1E40AF',
+    borderRadius: 12,
+    overflow: 'hidden'
+  },
+  checkmark: {
+    fontSize: 24,
+    color: '#6366F1'
+  },
+  typeButtons: {
     flexDirection: 'row',
     gap: 12,
     marginBottom: 20
   },
-  methodButton: {
+  typeButton: {
     flex: 1,
     padding: 20,
     backgroundColor: '#F9FAFB',
     borderRadius: 12,
     borderWidth: 2,
     borderColor: '#E5E7EB',
-    alignItems: 'center',
-    position: 'relative'
+    alignItems: 'center'
   },
-  methodButtonActive: {
-    borderColor: '#3B82F6',
-    backgroundColor: '#EFF6FF'
+  typeButtonActive: {
+    borderColor: '#6366F1',
+    backgroundColor: '#EEF2FF'
   },
-  methodEmoji: {
-    fontSize: 40,
+  typeEmoji: {
+    fontSize: 32,
     marginBottom: 8
   },
-  methodLabel: {
+  typeLabel: {
     fontSize: 14,
     fontWeight: '600',
-    color: '#374151'
+    color: '#6B7280'
   },
-  availableDot: {
-    position: 'absolute',
-    top: 10,
-    right: 10,
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    backgroundColor: '#10B981'
+  typeLabelActive: {
+    color: '#6366F1'
   },
-  cameraContainer: {
-    marginBottom: 20
-  },
-  camera: {
-    width: '100%',
-    height: 300,
+  startButton: {
+    backgroundColor: '#6366F1',
+    padding: 16,
     borderRadius: 12,
-    overflow: 'hidden'
+    alignItems: 'center'
   },
-  cameraHint: {
-    fontSize: 12,
-    color: '#6B7280',
-    textAlign: 'center',
-    marginTop: 8
+  startButtonDisabled: {
+    backgroundColor: '#9CA3AF'
   },
-  permissionButton: {
-    height: 300,
-    backgroundColor: '#F9FAFB',
-    borderRadius: 12,
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 2,
-    borderColor: '#E5E7EB',
-    borderStyle: 'dashed'
-  },
-  permissionText: {
+  startButtonText: {
+    color: '#fff',
     fontSize: 16,
-    color: '#6B7280',
     fontWeight: '600'
+  },
+  sessionInfo: {
+    backgroundColor: '#EEF2FF',
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 16
+  },
+  sessionRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 12
+  },
+  sessionLabel: {
+    fontSize: 13,
+    color: '#6B7280',
+    fontWeight: '500'
+  },
+  sessionValue: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#111827'
   },
   instructionsCard: {
     backgroundColor: '#F9FAFB',
     padding: 16,
     borderRadius: 12,
-    marginBottom: 20
+    marginBottom: 16
   },
   instructionsTitle: {
     fontSize: 14,
@@ -679,140 +1337,242 @@ const styles = StyleSheet.create({
   instructionText: {
     fontSize: 13,
     color: '#6B7280',
-    marginBottom: 4,
-    paddingLeft: 8
+    marginBottom: 4
   },
-  verifyButton: {
-    backgroundColor: '#3B82F6',
-    padding: 16,
+  nbisNote: {
+    fontSize: 12,
+    color: '#3B82F6',
+    marginTop: 8,
+    fontWeight: '500'
+  },
+  scanButton: {
+    backgroundColor: '#10B981',
+    padding: 20,
     borderRadius: 12,
-    alignItems: 'center'
+    alignItems: 'center',
+    marginBottom: 16
   },
-  verifyButtonDisabled: {
+  scanButtonDisabled: {
     backgroundColor: '#9CA3AF'
   },
-  verifyingContent: {
+  scanningContent: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12
   },
-  verifyButtonText: {
+  scanButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: 'bold'
+  },
+  resultCard: {
+    padding: 16,
+    borderRadius: 12,
+    alignItems: 'center',
+    marginBottom: 16
+  },
+  resultEmoji: {
+    fontSize: 48,
+    marginBottom: 8
+  },
+  resultTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    marginBottom: 4
+  },
+  resultMessage: {
+    fontSize: 14,
+    color: '#374151',
+    textAlign: 'center',
+    marginBottom: 8
+  },
+  resultDetail: {
+    fontSize: 12,
+    color: '#6B7280',
+    marginTop: 2
+  },
+  closeButton: {
+    backgroundColor: '#EF4444',
+    padding: 16,
+    borderRadius: 12,
+    alignItems: 'center'
+  },
+  closeButtonText: {
     color: '#fff',
     fontSize: 16,
     fontWeight: '600'
   },
-  resultCard: {
+  logCard: {
     margin: 16,
-    padding: 24,
+    padding: 20,
     backgroundColor: '#fff',
     borderRadius: 16,
-    alignItems: 'center',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.1,
     shadowRadius: 8,
     elevation: 3
   },
-  successEmoji: {
-    fontSize: 60,
-    marginBottom: 10
+  emptyLog: {
+    alignItems: 'center',
+    paddingVertical: 40
   },
-  successTitle: {
-    fontSize: 24,
+  emptyLogEmoji: {
+    fontSize: 48,
+    marginBottom: 12
+  },
+  emptyLogText: {
+    fontSize: 16,
+    color: '#9CA3AF'
+  },
+  logItem: {
+    flexDirection: 'row',
+    padding: 12,
+    backgroundColor: '#F0FDF4',
+    borderRadius: 12,
+    marginBottom: 8,
+    borderWidth: 2,
+    borderColor: '#BBF7D0'
+  },
+  logImage: {
+    width: 48,
+    height: 48,
+    borderRadius: 8,
+    marginRight: 12,
+    borderWidth: 2,
+    borderColor: '#fff'
+  },
+  logContent: {
+    flex: 1
+  },
+  logName: {
+    fontSize: 15,
     fontWeight: 'bold',
-    color: '#10B981',
-    marginBottom: 8
+    color: '#111827',
+    marginBottom: 2
   },
-  confidence: {
-    fontSize: 14,
+  logMatric: {
+    fontSize: 13,
     color: '#6B7280',
-    marginBottom: 20
+    marginBottom: 6
   },
-  profileImage: {
-    width: 120,
-    height: 120,
-    borderRadius: 60,
-    marginBottom: 16,
-    borderWidth: 4,
-    borderColor: '#10B981'
+  logBadges: {
+    flexDirection: 'row',
+    gap: 6,
+    marginBottom: 4
   },
-  studentName: {
+  logBadge: {
+    fontSize: 11,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 10,
+    overflow: 'hidden'
+  },
+  logDetails: {
+    fontSize: 11,
+    color: '#6B7280'
+  },
+  logTime: {
+    fontSize: 11,
+    color: '#9CA3AF',
+    marginLeft: 8
+  },
+  emptyState: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 40
+  },
+  emptyEmoji: {
+    fontSize: 80,
+    marginBottom: 16
+  },
+  emptyTitle: {
     fontSize: 20,
     fontWeight: 'bold',
     color: '#111827',
-    textAlign: 'center',
-    marginBottom: 4
+    marginBottom: 8
   },
-  matricNumber: {
-    fontSize: 16,
-    color: '#3B82F6',
-    fontWeight: '600',
-    marginBottom: 12
-  },
-  badge: {
-    backgroundColor: '#EFF6FF',
-    paddingHorizontal: 16,
-    paddingVertical: 6,
-    borderRadius: 20,
-    marginBottom: 20
-  },
-  badgeText: {
-    color: '#3B82F6',
-    fontSize: 12,
-    fontWeight: '600'
-  },
-  detailsCard: {
-    width: '100%',
-    backgroundColor: '#F9FAFB',
-    borderRadius: 12,
-    padding: 16,
-    marginBottom: 20
-  },
-  detailRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 12
-  },
-  detailLabel: {
-    fontSize: 13,
+  emptyText: {
+    fontSize: 14,
     color: '#6B7280',
-    fontWeight: '500'
+    textAlign: 'center'
   },
-  detailValue: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#111827',
-    flex: 1,
-    textAlign: 'right'
+  reportCard: {
+    margin: 16,
+    padding: 20,
+    backgroundColor: '#fff',
+    borderRadius: 16
   },
-  buttonRow: {
+  statsGrid: {
     flexDirection: 'row',
-    gap: 12,
-    width: '100%'
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 20
   },
-  allowButton: {
+  statBox: {
     flex: 1,
-    backgroundColor: '#10B981',
+    minWidth: '45%',
     padding: 16,
     borderRadius: 12,
     alignItems: 'center'
   },
-  buttonText: {
+  statLabel: {
+    fontSize: 12,
+    color: '#6B7280',
+    marginBottom: 4
+  },
+  statValue: {
+    fontSize: 28,
+    fontWeight: 'bold'
+  },
+  reportItem: {
+    padding: 12,
+    borderRadius: 8,
+    marginBottom: 8,
+    flexDirection: 'row',
+    alignItems: 'center'
+  },
+  reportItemContent: {
+    flex: 1
+  },
+  reportMatric: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#111827'
+  },
+  reportName: {
+    fontSize: 13,
+    color: '#6B7280',
+    marginBottom: 4
+  },
+  reportTimes: {
+    flexDirection: 'row',
+    gap: 12
+  },
+  reportTimeText: {
+    fontSize: 11,
+    color: '#9CA3AF'
+  },
+  statusBadge: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 12
+  },
+  statusBadgeText: {
     color: '#fff',
-    fontSize: 16,
+    fontSize: 12,
     fontWeight: '600'
   },
-  resetButton: {
-    flex: 1,
-    backgroundColor: '#fff',
+  newSessionButton: {
+    backgroundColor: '#6366F1',
     padding: 16,
     borderRadius: 12,
     alignItems: 'center',
-    borderWidth: 2,
-    borderColor: '#E5E7EB'
+    marginTop: 16
   },
-  resetButtonText: {
-    color: '#374151',
+  newSessionButtonText: {
+    color: '#fff',
     fontSize: 16,
     fontWeight: '600'
   }
