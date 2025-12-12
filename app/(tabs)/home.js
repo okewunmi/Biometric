@@ -53,13 +53,13 @@ export default function AdminDashboard() {
   const [recentActivities, setRecentActivities] = useState([]);
 
   const drawerMenuItems = [
-    // {
-    //   id: 'attendance',
-    //   title: 'Mark Attendance',
-    //   icon: 'clipboard-outline',
-    //   iconType: 'Ionicons',
-    //   route: '/mark-attendance',
-    // },
+    {
+      id: 'attendance',
+      title: 'Mark Attendance',
+      icon: 'clipboard-outline',
+      iconType: 'Ionicons',
+      route: '/mark-attendance',
+    },
     {
       id: 'reports',
       title: 'View Reports',
@@ -74,13 +74,13 @@ export default function AdminDashboard() {
       iconType: 'Ionicons',
       route: '/registered-courses',
     },
-    {
-      id: 'exam-sessions',
-      title: 'Exam Sessions',
-      icon: 'document-text',
-      iconType: 'Ionicons',
-      route: '/exam-sessions',
-    },
+    // {
+    //   id: 'exam-sessions',
+    //   title: 'Exam Sessions',
+    //   icon: 'document-text',
+    //   iconType: 'Ionicons',
+    //   route: '/exam-sessions',
+    // },
     {
       id: 'sub-admin',
       title: 'Sub Admin',
@@ -97,19 +97,6 @@ export default function AdminDashboard() {
     },
   ];
 
-  // Auth check
-  // useEffect(() => {
-  //   const verifyAuth = async () => {
-  //     const result = await checkAuth();
-
-  //     if (!result.success || !result.user) {
-  //       console.log('No active session, redirecting to login');
-  //       router.replace('/(auth)/signIn');
-  //     }
-  //   };
-
-  //   verifyAuth();
-  // }, [checkAuth, router]);
   
 useEffect(() => {
   // Only verify auth if not already initialized
@@ -221,21 +208,8 @@ useEffect(() => {
     router.push(item.route);
   };
 
-  // const handleSignOut = async () => {
-  //   if (isLoggingOut) return;
-    
-  //   try {
-  //     setIsLoggingOut(true);
-  //     await logout();
-  //     setDrawerVisible(false);
-  //     router.replace('/signIn');
-  //   } catch (error) {
-  //     console.error('Logout error:', error);
-  //   } finally {
-  //     setIsLoggingOut(false);
-  //   }
-  // };
-const handleSignOut = async () => {
+  
+  const handleSignOut = async () => {
     // Prevent multiple logout attempts
     if (isLoggingOut) {
       console.log('⏳ Logout already in progress');
