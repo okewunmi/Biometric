@@ -22,11 +22,14 @@ const { width } = Dimensions.get('window');
 // ⚠️ IMPORTANT: Replace with your actual server URL
 const API_BASE_URL = 'https://ftpv.appwrite.network/';
 
-// Import face-api.js for React Native
-// You need to install: npm install @tensorflow/tfjs @tensorflow/tfjs-react-native @vladmandic/face-api
-import * as faceapi from '@vladmandic/face-api';
+// // Import face-api.js for React Native
+// // You need to install: npm install @tensorflow/tfjs @tensorflow/tfjs-react-native @vladmandic/face-api
+// import * as faceapi from '@vladmandic/face-api';
+// import * as tf from '@tensorflow/tfjs';
+// import { bundleResourceIO, decodeJpeg } from '@tensorflow/tfjs-react-native';
 import * as tf from '@tensorflow/tfjs';
-import { bundleResourceIO, decodeJpeg } from '@tensorflow/tfjs-react-native';
+import '@tensorflow/tfjs-backend-webgl';
+import * as faceapi from '@vladmandic/face-api';
 
 export default function ExamVerificationScreen() {
   const [verificationType, setVerificationType] = useState('');
@@ -76,90 +79,93 @@ export default function ExamVerificationScreen() {
   /**
    * Initialize TensorFlow.js and load face-api.js models
    */
-  const initializeFaceAPI = async () => {
-    try {
-      console.log('🔧 Initializing TensorFlow.js...');
-      await tf.ready();
-      console.log('✅ TensorFlow.js ready');
+ const initializeFaceAPI = async () => {
+  try {
+    console.log('🔧 Initializing TensorFlow.js...');
+    
+    // Set WebGL backend
+    await tf.setBackend('webgl');
+    await tf.ready();
+    console.log('✅ TensorFlow.js ready with WebGL backend');
 
-      console.log('📦 Loading face-api.js models...');
-      
-      // Load models from your app's assets folder
-      // Make sure you have the models in: assets/models/
-      const modelPath = FileSystem.documentDirectory + 'models';
-      
-      await Promise.all([
-        faceapi.nets.ssdMobilenetv1.loadFromUri(modelPath),
-        faceapi.nets.faceLandmark68Net.loadFromUri(modelPath),
-        faceapi.nets.faceRecognitionNet.loadFromUri(modelPath)
-      ]);
+    console.log('📦 Loading face-api.js models...');
+    
+    // Load models from your app's assets folder
+    // Make sure you have the models in: assets/models/
+    const modelPath = FileSystem.documentDirectory + 'models';
+    
+    await Promise.all([
+      faceapi.nets.ssdMobilenetv1.loadFromUri(modelPath),
+      faceapi.nets.faceLandmark68Net.loadFromUri(modelPath),
+      faceapi.nets.faceRecognitionNet.loadFromUri(modelPath)
+    ]);
 
-      setFaceModelsLoaded(true);
-      console.log('✅ Face models loaded successfully');
-      setStatus({ message: 'Face recognition ready', type: 'success' });
+    setFaceModelsLoaded(true);
+    console.log('✅ Face models loaded successfully');
+    setStatus({ message: 'Face recognition ready', type: 'success' });
 
-    } catch (error) {
-      console.error('❌ Error loading face models:', error);
-      setStatus({ 
-        message: 'Face models failed to load. Using server-side processing.', 
-        type: 'warning' 
-      });
-      // We'll fall back to server-side processing
-    }
-  };
+  } catch (error) {
+    console.error('❌ Error loading face models:', error);
+    setStatus({ 
+      message: 'Face models failed to load. Using server-side processing.', 
+      type: 'warning' 
+    });
+  }
+};
 
   /**
    * Extract face descriptor from image (client-side)
    */
   const extractFaceDescriptor = async (imageUri) => {
-    try {
-      console.log('🔍 Extracting face descriptor...');
+  try {
+    console.log('🔍 Extracting face descriptor...');
 
-      // Read image as base64
-      const base64 = await FileSystem.readAsStringAsync(imageUri, {
-        encoding: FileSystem.EncodingType.Base64,
-      });
+    // Read image as base64
+    const base64 = await FileSystem.readAsStringAsync(imageUri, {
+      encoding: FileSystem.EncodingType.Base64,
+    });
 
-      // Decode JPEG to tensor
-      const imageBuffer = tf.util.encodeString(base64, 'base64').buffer;
-      const imageArray = new Uint8Array(imageBuffer);
-      const imageTensor = decodeJpeg(imageArray);
+    // Create image element for face-api.js
+    const img = new Image();
+    img.src = `data:image/jpeg;base64,${base64}`;
+    
+    await new Promise((resolve, reject) => {
+      img.onload = resolve;
+      img.onerror = reject;
+    });
 
-      // Detect face and extract descriptor
-      const detection = await faceapi
-        .detectSingleFace(imageTensor)
-        .withFaceLandmarks()
-        .withFaceDescriptor();
+    // Detect face and extract descriptor
+    const detection = await faceapi
+      .detectSingleFace(img)
+      .withFaceLandmarks()
+      .withFaceDescriptor();
 
-      // Clean up tensor
-      imageTensor.dispose();
-
-      if (!detection) {
-        return {
-          success: false,
-          error: 'NO_FACE_DETECTED',
-          message: 'No face detected. Please ensure good lighting and face the camera.'
-        };
-      }
-
-      const confidence = Math.round(detection.detection.score * 100);
-      console.log(`✅ Face detected with ${confidence}% confidence`);
-
-      return {
-        success: true,
-        descriptor: Array.from(detection.descriptor),
-        confidence: confidence
-      };
-
-    } catch (error) {
-      console.error('❌ Error extracting descriptor:', error);
+    if (!detection) {
       return {
         success: false,
-        error: error.message,
-        message: 'Failed to process face'
+        error: 'NO_FACE_DETECTED',
+        message: 'No face detected. Please ensure good lighting and face the camera.'
       };
     }
-  };
+
+    const confidence = Math.round(detection.detection.score * 100);
+    console.log(`✅ Face detected with ${confidence}% confidence`);
+
+    return {
+      success: true,
+      descriptor: Array.from(detection.descriptor),
+      confidence: confidence
+    };
+
+  } catch (error) {
+    console.error('❌ Error extracting descriptor:', error);
+    return {
+      success: false,
+      error: error.message,
+      message: 'Failed to process face'
+    };
+  }
+};
 
   const checkFingerprintScanner = async () => {
     try {

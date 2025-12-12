@@ -1,4 +1,5 @@
-import { useState, useEffect } from 'react';
+
+import { useState, useEffect, useRef } from 'react';
 import { 
   View, 
   Text, 
@@ -16,16 +17,24 @@ import { useRouter } from 'expo-router';
 import { Ionicons, MaterialIcons, MaterialCommunityIcons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { SafeAreaView } from "react-native-safe-area-context";
+import { NativeModules, NativeEventEmitter } from 'react-native';
+import * as FileSystem from 'expo-file-system';
 import {
   createStudent,
   getAllStudents,
   updateStudent,
   deleteStudent,
-  saveFingerprints,
+  saveFingerprintsPNG,
   getStudentStats,
-  generateDepartmentCode
+  generateDepartmentCode,
+  getStudentsWithFingerprintsPNG
 } from '@/lib/appwrite';
-import fingerprintScanner from '@/lib/fingerprint-digitalpersona';
+
+const { FingerprintModule } = NativeModules;
+const fingerprintEmitter = FingerprintModule ? new NativeEventEmitter(FingerprintModule) : null;
+
+// ⚠️ IMPORTANT: Replace with your actual server URL
+const API_BASE_URL = 'https://ftpv.appwrite.network';
 
 export default function StudentManagement() {
   const router = useRouter();
@@ -44,6 +53,7 @@ export default function StudentManagement() {
   const [submitting, setSubmitting] = useState(false);
   const [showDepartmentPicker, setShowDepartmentPicker] = useState(false);
   const [showLevelPicker, setShowLevelPicker] = useState(false);
+  const [showCoursePicker, setShowCoursePicker] = useState(false);
   const [showFilterDeptPicker, setShowFilterDeptPicker] = useState(false);
   const [showFilterLevelPicker, setShowFilterLevelPicker] = useState(false);
   
@@ -52,7 +62,8 @@ export default function StudentManagement() {
   const [isCapturing, setIsCapturing] = useState(false);
   const [capturedFingers, setCapturedFingers] = useState({});
   const [captureStatus, setCaptureStatus] = useState(null);
-  const [scannerReady, setScannerReady] = useState(false);
+  const scannerInitializedRef = useRef(false);
+  const [scannerStatus, setScannerStatus] = useState({ ready: false, message: null, type: null });
   const [checkingDuplicates, setCheckingDuplicates] = useState(false);
 
   const fingers = [
@@ -78,9 +89,16 @@ export default function StudentManagement() {
 
   const departments = [
     'Engineering',
-    'Social Science',
-    'Education',
-    'Environmetal',
+    // 'Social Science',
+    // 'Education',
+    // 'Environmetal',
+  ];
+
+  const courses = [
+    'Electrical Electronics Engineering',
+    // 'Social Science',
+    // 'Education',
+    // 'Environmetal',
   ];
 
   const levels = ['100', '200', '300', '400', '500'];
@@ -88,6 +106,33 @@ export default function StudentManagement() {
   useEffect(() => {
     fetchStudents();
     fetchStats();
+    
+    // Setup fingerprint event listeners
+    if (fingerprintEmitter) {
+      const listeners = [
+        fingerprintEmitter.addListener('onScanStarted', () => {
+          setCaptureStatus({ type: 'info', message: 'Place finger on scanner...' });
+        }),
+        
+        fingerprintEmitter.addListener('onScanComplete', async (data) => {
+          console.log('✅ Scan complete, received data');
+          await handleScanComplete(data);
+        }),
+        
+        fingerprintEmitter.addListener('onScanError', (error) => {
+          setCaptureStatus({ type: 'error', message: `Error: ${error.error}` });
+          setIsCapturing(false);
+          Alert.alert('Scan Error', error.error);
+        })
+      ];
+
+      return () => {
+        listeners.forEach(listener => listener.remove());
+        if (FingerprintModule?.close) {
+          FingerprintModule.close();
+        }
+      };
+    }
   }, []);
 
   const fetchStudents = async () => {
@@ -117,76 +162,38 @@ export default function StudentManagement() {
     setFormData({ ...formData, [name]: value });
   };
 
-  // const pickImage = async () => {
-  //   const result = await ImagePicker.launchImageLibraryAsync({
-  //     mediaTypes: ImagePicker.MediaType.Images,
-  //     allowsEditing: true,
-  //     aspect: [1, 1],
-  //     quality: 0.8,
-  //   });
-
-  //   if (!result.canceled && result.assets[0]) {
-  //     const asset = result.assets[0];
+  const pickImage = async () => {
+    try {
+      const permissionResult = await ImagePicker.requestMediaLibraryPermissionsAsync();
       
-  //     // Check file size (estimate from URI)
-  //     if (asset.fileSize && asset.fileSize > 5 * 1024 * 1024) {
-  //       showNotification('File size must be less than 5MB', 'error');
-  //       return;
-  //     }
-
-  //     setFormData({ ...formData, profilePicture: asset });
-  //     setProfilePreview(asset.uri);
-  //   }
-  // };
-// Fix for the pickImage function in your students.js file
-
-const pickImage = async () => {
-  try {
-    // Request permissions first
-    const permissionResult = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    
-    if (permissionResult.granted === false) {
-      showNotification('Permission to access camera roll is required!', 'error');
-      return;
-    }
-
-    // Launch image picker with correct configuration
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ['images'], // Use array of strings instead
-      allowsEditing: true,
-      aspect: [1, 1],
-      quality: 0.8,
-    });
-
-    console.log('Image picker result:', result);
-
-    if (!result.canceled && result.assets && result.assets[0]) {
-      const asset = result.assets[0];
-      
-      // Check file size if available
-      if (asset.fileSize && asset.fileSize > 5 * 1024 * 1024) {
-        showNotification('File size must be less than 5MB', 'error');
+      if (permissionResult.granted === false) {
+        showNotification('Permission to access camera roll is required!', 'error');
         return;
       }
 
-      // Store the complete asset object
-      setFormData({ ...formData, profilePicture: asset });
-      setProfilePreview(asset.uri);
-      
-      console.log('Image selected:', {
-        uri: asset.uri,
-        width: asset.width,
-        height: asset.height,
-        type: asset.type
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.8,
       });
-    } else {
-      console.log('Image picker cancelled');
+
+      if (!result.canceled && result.assets && result.assets[0]) {
+        const asset = result.assets[0];
+        
+        if (asset.fileSize && asset.fileSize > 5 * 1024 * 1024) {
+          showNotification('File size must be less than 5MB', 'error');
+          return;
+        }
+
+        setFormData({ ...formData, profilePicture: asset });
+        setProfilePreview(asset.uri);
+      }
+    } catch (error) {
+      console.error('Error picking image:', error);
+      showNotification('Failed to pick image: ' + error.message, 'error');
     }
-  } catch (error) {
-    console.error('Error picking image:', error);
-    showNotification('Failed to pick image: ' + error.message, 'error');
-  }
-};
+  };
 
   const handleSubmit = async () => {
     if (!formData.surname || !formData.firstName || !formData.middleName || 
@@ -300,20 +307,60 @@ const pickImage = async () => {
     setCurrentFingerIndex(0);
     setCapturedFingers({});
     setCaptureStatus(null);
-    setScannerReady(false);
-    
-    const initResult = await fingerprintScanner.initialize();
-    if (initResult.success) {
-      setScannerReady(true);
-      setCaptureStatus({ type: 'success', message: 'Scanner ready! Click "Capture" to begin.' });
-    } else {
-      setCaptureStatus({ type: 'error', message: initResult.error });
+    setScannerStatus({ ready: false, message: null, type: null });
+
+    // Check if FingerprintModule is available
+    if (!FingerprintModule) {
+      setScannerStatus({ 
+        ready: false, 
+        message: 'Fingerprint scanner module not available. Please ensure native module is properly installed.', 
+        type: 'error' 
+      });
+      return;
+    }
+
+    // Only initialize if not already initialized
+    if (scannerInitializedRef.current) {
+      setScannerStatus({ ready: true, message: 'Scanner ready! Click "Capture" to begin.', type: 'success' });
+      return;
+    }
+
+    try {
+      // Check scanner availability
+      const availability = await FingerprintModule.isAvailable();
+      
+      if (!availability.available) {
+        setScannerStatus({ 
+          ready: false, 
+          message: 'Scanner not connected. Please connect DigitalPersona scanner via OTG.', 
+          type: 'error' 
+        });
+        return;
+      }
+
+      // Initialize scanner
+      const initResult = await FingerprintModule.initialize();
+      
+      if (initResult.success) {
+        scannerInitializedRef.current = true;
+        setScannerStatus({ ready: true, message: 'Scanner ready! Click "Capture" to begin.', type: 'success' });
+      } else {
+        setScannerStatus({ ready: false, message: initResult.message || 'Failed to initialize scanner', type: 'error' });
+      }
+    } catch (error) {
+      console.error('Scanner initialization error:', error);
+      setScannerStatus({ ready: false, message: error.message, type: 'error' });
     }
   };
 
   const handleCaptureFinger = async () => {
-    if (!scannerReady) {
-      setCaptureStatus({ type: 'error', message: 'Scanner not ready. Please wait...' });
+    if (!scannerStatus.ready) {
+      setCaptureStatus({ type: 'error', message: scannerStatus.message || 'Scanner not initialized.' });
+      return;
+    }
+
+    if (!FingerprintModule) {
+      setCaptureStatus({ type: 'error', message: 'Fingerprint module not available' });
       return;
     }
 
@@ -322,106 +369,22 @@ const pickImage = async () => {
 
     try {
       const currentFinger = fingers[currentFingerIndex];
-      
-      const captureResult = await fingerprintScanner.capture(
-        selectedStudent.$id,
-        currentFinger.label
-      );
+      console.log(`\n🔍 Capturing ${currentFinger.label}...`);
+
+      // Start fingerprint capture
+      const captureResult = await FingerprintModule.capturePrint({
+        fingerName: currentFinger.label
+      });
 
       if (!captureResult.success) {
-        throw new Error(captureResult.error);
+        throw new Error(captureResult.message || 'Scan failed');
       }
 
-      setCheckingDuplicates(true);
-      setCaptureStatus({ type: 'info', message: 'Checking for duplicates...' });
-      
-      const existingTemplates = [];
-      for (const student of students) {
-        if (student.$id === selectedStudent.$id) continue;
-        
-        if (student.thumbTemplate) existingTemplates.push({ 
-          studentId: student.$id, 
-          matricNumber: student.matricNumber,
-          template: student.thumbTemplate,
-          fingerName: 'Thumb'
-        });
-        if (student.indexTemplate) existingTemplates.push({ 
-          studentId: student.$id, 
-          matricNumber: student.matricNumber,
-          template: student.indexTemplate,
-          fingerName: 'Index'
-        });
-        if (student.middleTemplate) existingTemplates.push({ 
-          studentId: student.$id, 
-          matricNumber: student.matricNumber,
-          template: student.middleTemplate,
-          fingerName: 'Middle'
-        });
-        if (student.ringTemplate) existingTemplates.push({ 
-          studentId: student.$id, 
-          matricNumber: student.matricNumber,
-          template: student.ringTemplate,
-          fingerName: 'Ring'
-        });
-        if (student.pinkyTemplate) existingTemplates.push({ 
-          studentId: student.$id, 
-          matricNumber: student.matricNumber,
-          template: student.pinkyTemplate,
-          fingerName: 'Pinky'
-        });
-      }
-
-      Object.entries(capturedFingers).forEach(([fingerId, data]) => {
-        existingTemplates.push({
-          studentId: selectedStudent.$id,
-          matricNumber: selectedStudent.matricNumber,
-          template: data.template,
-          fingerName: fingerId
-        });
-      });
-
-      const duplicateCheck = await fingerprintScanner.checkForDuplicates(
-        captureResult.template,
-        existingTemplates
-      );
-
-      setCheckingDuplicates(false);
-
-      if (duplicateCheck.hasDuplicates) {
-        const duplicate = duplicateCheck.duplicates[0];
-        setCaptureStatus({ 
-          type: 'error', 
-          message: `⚠️ DUPLICATE! This fingerprint is already registered to ${duplicate.matricNumber} (${duplicate.fingerName}). Please use a different finger.` 
-        });
-        setIsCapturing(false);
-        return;
-      }
-
-      setCapturedFingers(prev => ({
-        ...prev,
-        [currentFinger.id]: {
-          template: captureResult.template,
-          quality: captureResult.quality,
-          capturedAt: captureResult.capturedAt
-        }
-      }));
-
-      setCaptureStatus({ 
-        type: 'success', 
-        message: `✅ ${currentFinger.label} captured successfully! (Quality: ${captureResult.quality}%)` 
-      });
-      
-      setTimeout(() => {
-        if (currentFingerIndex < fingers.length - 1) {
-          setCurrentFingerIndex(currentFingerIndex + 1);
-          setCaptureStatus({ type: 'info', message: 'Ready for next finger...' });
-        } else {
-          saveFingerprintsToDatabase();
-        }
-        setIsCapturing(false);
-      }, 1500);
+      // The actual processing will happen in handleScanComplete
+      // which is triggered by the native event listener
 
     } catch (error) {
+      console.error('❌ Capture error:', error);
       setCaptureStatus({ 
         type: 'error', 
         message: error.message || 'Capture failed. Please try again.' 
@@ -431,22 +394,185 @@ const pickImage = async () => {
     }
   };
 
-  const saveFingerprintsToDatabase = async () => {
-    setCaptureStatus({ type: 'info', message: 'Saving fingerprints to database...' });
+  const handleScanComplete = async (data) => {
+    try {
+      const currentFinger = fingers[currentFingerIndex];
+      
+      console.log('✅ Captured successfully');
+      console.log('📊 Quality:', data.quality + '%');
+      console.log('📏 Size:', data.imageData?.length || 0, 'bytes');
+
+      // Quality check
+      if (data.quality < 50) {
+        setCaptureStatus({ 
+          type: 'warning', 
+          message: `Quality too low (${data.quality}%). Please clean your finger and try again.` 
+        });
+        setIsCapturing(false);
+        return;
+      }
+
+      // ===== STEP 2: Check for duplicates (OPTIMIZED) =====
+      setCheckingDuplicates(true);
+      setCaptureStatus({ type: 'info', message: 'Checking for duplicates...' });
+      
+      console.log('🔍 Starting duplicate check...');
+
+      // Get all stored fingerprints
+      const storedFingerprints = await getStudentsWithFingerprintsPNG();
+      
+      if (storedFingerprints.success && storedFingerprints.data.length > 0) {
+        console.log(`📊 Checking against ${storedFingerprints.data.length} stored fingerprints...`);
+        
+        // 🚀 USE BATCH COMPARISON (MUCH FASTER!)
+        const response = await fetch(`${API_BASE_URL}/api/fingerprint/verify-batch`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            queryImage: data.imageData,
+            database: storedFingerprints.data.map(fp => ({
+              id: fp.fileId,
+              studentId: fp.student.$id,
+              matricNumber: fp.student.matricNumber,
+              studentName: `${fp.student.firstName} ${fp.student.surname}`,
+              fingerName: fp.fingerName,
+              imageData: fp.imageData,
+              student: fp.student
+            }))
+          })
+        });
+        
+        const batchResult = await response.json();
+        
+        if (batchResult.success && batchResult.matched) {
+          const match = batchResult.bestMatch;
+          
+          // Check if it's the SAME student (OK) or DIFFERENT student (DUPLICATE)
+          if (match.studentId !== selectedStudent.$id) {
+            console.error('❌ DUPLICATE DETECTED!');
+            setCheckingDuplicates(false);
+            setCaptureStatus({ 
+              type: 'error', 
+              message: `⚠️ DUPLICATE! This fingerprint is already registered to ${match.studentName}` 
+            });
+            setIsCapturing(false);
+            return;
+          }
+          
+          console.log('✓ Same student - checking if same finger slot...');
+        }
+      }
+
+      setCheckingDuplicates(false);
+
+      // ===== STEP 3: Check current session duplicates =====
+      console.log('🔍 Checking session duplicates...');
+      
+      const sessionFingers = Object.entries(capturedFingers).filter(
+        ([fingerId, fingerData]) => fingerId !== currentFinger.id && fingerData?.imageData
+      );
+      
+      if (sessionFingers.length > 0) {
+        const sessionResponse = await fetch(`${API_BASE_URL}/api/fingerprint/verify-batch`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            queryImage: data.imageData,
+            database: sessionFingers.map(([fingerId, fingerData]) => ({
+              id: fingerId,
+              fingerName: fingers.find(f => f.id === fingerId)?.label,
+              imageData: fingerData.imageData
+            }))
+          })
+        });
+        
+        const sessionResult = await sessionResponse.json();
+        
+        if (sessionResult.success && sessionResult.matched) {
+          setCaptureStatus({ 
+            type: 'error', 
+            message: `⚠️ DUPLICATE! You already captured this finger as "${sessionResult.bestMatch.fingerName}". Please use a different finger.` 
+          });
+          setIsCapturing(false);
+          return;
+        }
+      }
+
+      // ===== STEP 4: Check if slot already used =====
+      if (capturedFingers[currentFinger.id]) {
+        setCaptureStatus({ 
+          type: 'error', 
+          message: `This finger slot (${currentFinger.label}) has already been captured. Please move to the next slot.` 
+        });
+        setIsCapturing(false);
+        return;
+      }
+
+      console.log('✅ Fingerprint is unique - accepting');
+      
+      // ===== STEP 5: Save fingerprint =====
+      const newCapturedFingers = {
+        ...capturedFingers,
+        [currentFinger.id]: {
+          imageData: data.imageData,
+          quality: data.quality,
+          capturedAt: new Date().toISOString()
+        }
+      };
+      
+      setCapturedFingers(newCapturedFingers);
+
+      setCaptureStatus({ 
+        type: 'success', 
+        message: `✅ ${currentFinger.label} captured successfully! (Quality: ${data.quality}%)` 
+      });
+      
+      const nextIndex = currentFingerIndex + 1;
+      const isLastFinger = nextIndex >= fingers.length;
+      
+      setTimeout(() => {
+        if (isLastFinger) {
+          console.log('🎉 All 5 fingers captured! Saving to storage...');
+          saveFingerprintsPNGToStorage(newCapturedFingers);
+        } else {
+          setCurrentFingerIndex(nextIndex);
+          setCaptureStatus({ type: 'info', message: 'Ready for next finger...' });
+        }
+        setIsCapturing(false);
+      }, 1500);
+
+    } catch (error) {
+      console.error('❌ Processing error:', error);
+      setCaptureStatus({ 
+        type: 'error', 
+        message: error.message || 'Processing failed. Please try again.' 
+      });
+      setIsCapturing(false);
+      setCheckingDuplicates(false);
+    }
+  };
+
+  const saveFingerprintsPNGToStorage = async (fingersData = null) => {
+    setCaptureStatus({ type: 'info', message: 'Saving fingerprints to storage...' });
     
     try {
+      const dataToSave = fingersData || capturedFingers;
+      
+      console.log('💾 Preparing to save fingerprints');
+      
       const fingerprintData = {
-        thumb: capturedFingers.thumb?.template || '',
-        index: capturedFingers.index?.template || '',
-        middle: capturedFingers.middle?.template || '',
-        ring: capturedFingers.ring?.template || '',
-        pinky: capturedFingers.pinky?.template || ''
+        thumb: dataToSave.thumb?.imageData || '',
+        index: dataToSave.index?.imageData || '',
+        middle: dataToSave.middle?.imageData || '',
+        ring: dataToSave.ring?.imageData || '',
+        pinky: dataToSave.pinky?.imageData || ''
       };
 
-      const result = await saveFingerprints(selectedStudent.$id, fingerprintData);
+      const result = await saveFingerprintsPNG(selectedStudent.$id, fingerprintData);
 
       if (result.success) {
-        showNotification('All fingerprints saved successfully!', 'success');
+        console.log('✅ Fingerprints saved successfully');
+        showNotification('All fingerprints saved to storage successfully!', 'success');
         fetchStudents();
         fetchStats();
         
@@ -454,21 +580,27 @@ const pickImage = async () => {
           closeFingerprintModal();
         }, 2000);
       } else {
+        console.error('❌ Failed to save:', result.error);
         showNotification('Error saving fingerprints: ' + result.error, 'error');
       }
     } catch (error) {
       showNotification('Error: ' + error.message, 'error');
+      console.error('❌ Error in saveFingerprintsPNGToStorage:', error);
     }
   };
 
-  const closeFingerprintModal = () => {
-    fingerprintScanner.stop();
+  const closeFingerprintModal = async () => {
+    scannerInitializedRef.current = false;
+    
+    if (FingerprintModule?.close) {
+      await FingerprintModule.close();
+    }
+
     setShowFingerprintModal(false);
     setCurrentFingerIndex(0);
     setCapturedFingers({});
     setCaptureStatus(null);
     setSelectedStudent(null);
-    setScannerReady(false);
   };
 
   const resetForm = () => {
@@ -583,15 +715,6 @@ const pickImage = async () => {
 
       <ScrollView style={styles.scrollView}>
         <View style={styles.content}>
-          {/* Header */}
-          {/* <TouchableOpacity 
-            style={styles.backButton}
-            onPress={() => router.push("/home")}
-          >
-            <Ionicons name="arrow-back" size={20} color="#666" />
-            <Text style={styles.backButtonText}>Back to Dashboard</Text>
-          </TouchableOpacity> */}
-
           <View style={styles.headerContainer}>
             <View style={styles.headerLeft}>
               <View style={styles.headerTitleRow}>
@@ -679,6 +802,7 @@ const pickImage = async () => {
               </TouchableOpacity>
             </View>
           </View>
+
 
           {/* Students List */}
           <View style={styles.studentsCard}>

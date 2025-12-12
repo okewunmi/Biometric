@@ -1,26 +1,25 @@
-import { useState, useEffect } from 'react';
-import { 
-  View, 
-  Text, 
-  ScrollView, 
-  TouchableOpacity, 
-  TextInput, 
-  Alert,
+import {
+  courseCodeExists,
+  createMultipleCourses,
+  deleteCourse,
+  getAllCourses,
+  getCourseStats
+} from '@/lib/appwrite';
+import { Ionicons, MaterialIcons } from '@expo/vector-icons';
+import { useRouter } from 'expo-router';
+import { useEffect, useState } from 'react';
+import {
   ActivityIndicator,
+  Alert,
+  Modal,
+  ScrollView,
   StyleSheet,
-  Modal
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View
 } from 'react-native';
 import { SafeAreaView } from "react-native-safe-area-context";
-import { useRouter } from 'expo-router';
-import { Ionicons, MaterialIcons } from '@expo/vector-icons';
-import {
-  createMultipleCourses,
-  getAllCourses,
-  updateCourse,
-  deleteCourse,
-  getCourseStats,
-  courseCodeExists
-} from '@/lib/appwrite';
 
 export default function CourseUploadPage() {
   const router = useRouter();
@@ -59,15 +58,8 @@ export default function CourseUploadPage() {
   ];
 
   const departments = [
-    { id: '1', name: 'Computer Science', value: 'Computer Science' },
-    { id: '2', name: 'Software Engineering', value: 'Software Engineering' },
-    { id: '3', name: 'Information Technology', value: 'Information Technology' },
-    { id: '4', name: 'Cyber Security', value: 'Cyber Security' },
-    { id: '5', name: 'Data Science', value: 'Data Science' },
-    { id: '6', name: 'Electrical and Electronics Engineering', value: 'Electrical and Electronics Engineering' },
-    { id: '7', name: 'Mechanical Engineering', value: 'Mechanical Engineering' },
-    { id: '8', name: 'Civil Engineering', value: 'Civil Engineering' }
-  ];
+  { id: '6', name: 'Electrical Electronics Engineering', value: 'Electrical Electronics Engineering' },
+];
 
   useEffect(() => {
     fetchCourses();
