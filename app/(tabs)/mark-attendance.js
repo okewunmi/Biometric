@@ -22,7 +22,7 @@ import {
   databases,
   config
 } from '@/lib/appwrite';
-import { Query, ID } from 'appwrite';
+import { Query, ID } from 'react-native-appwrite';
 
 const { FingerprintModule } = NativeModules;
 const fingerprintEmitter = FingerprintModule ? new NativeEventEmitter(FingerprintModule) : null;
