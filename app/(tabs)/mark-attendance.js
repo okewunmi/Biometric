@@ -23,7 +23,7 @@ import {
   config
 } from '@/lib/appwrite';
 import { Query, ID } from 'react-native-appwrite';
-
+import { SafeAreaView } from "react-native-safe-area-context";
 const { FingerprintModule } = NativeModules;
 const fingerprintEmitter = FingerprintModule ? new NativeEventEmitter(FingerprintModule) : null;
 
@@ -807,11 +807,12 @@ export default function AdminAttendanceInterface({ navigation }) {
 
   // Main interface
   return (
+    // <SafeAreaView style={styles.safeArea}>
     <ScrollView style={styles.container}>
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton}>
+        {/* <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton}>
           <Text style={styles.backButtonText}>← Back</Text>
-        </TouchableOpacity>
+        </TouchableOpacity> */}
         <Text style={styles.title}>📋 Mark Attendance</Text>
         <Text style={styles.subtitle}>
           NBIS fingerprint verification system
@@ -1088,13 +1089,15 @@ export default function AdminAttendanceInterface({ navigation }) {
         </View>
       )}
     </ScrollView>
+    // </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#F3F4F6'
+    backgroundColor: '#F3F4F6',
+    marginTop:30,
   },
   loadingContainer: {
     flex: 1,
