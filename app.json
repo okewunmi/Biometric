@@ -9,7 +9,14 @@
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSCameraUsageDescription": "This app needs access to the camera for face verification and identity authentication.",
+        "NSMicrophoneUsageDescription": "This app needs access to the microphone for video recording during verification.",
+        "NSAppTransportSecurity": {
+          "NSAllowsArbitraryLoads": true
+        }
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -21,8 +28,12 @@
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
       "package": "com.fourfive.FTPV",
+      
       "permissions": [
         "android.permission.INTERNET",
+        "android.permission.ACCESS_NETWORK_STATE",
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO",
         "android.permission.USB_PERMISSION"
       ]
     },
@@ -32,6 +43,14 @@
     },
     "plugins": [
       "expo-router",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow $(PRODUCT_NAME) to access your camera for face verification and identity authentication.",
+          "microphonePermission": "Allow $(PRODUCT_NAME) to access your microphone for video recording during verification.",
+          "recordAudioAndroid": true
+        }
+      ],
       [
         "expo-splash-screen",
         {
@@ -55,9 +74,6 @@
         "projectId": "978c0e82-1347-4740-8560-5f2e104a98e8"
       }
     },
-    "assetBundlePatterns": [
-      "**/*",
-      "assets/models/**/*"
-    ]
+    "assetBundlePatterns": ["**/*", "assets/models/**/*"]
   }
 }
