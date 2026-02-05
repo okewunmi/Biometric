@@ -18,7 +18,6 @@
     "@react-navigation/drawer": "^7.5.0",
     "@react-navigation/elements": "^2.6.3",
     "@react-navigation/native": "^7.1.8",
-    "@vladmandic/face-api": "^1.7.15",
     "bcryptjs": "^3.0.3",
     "expo": "~54.0.33",
     "expo-camera": "~17.0.9",
