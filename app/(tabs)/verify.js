@@ -1,4 +1,4 @@
-// CORRECTED VERSION - Update API_BASE_URL!
+// MOBILE-ONLY FACE RECOGNITION - No Server-Side Processing Needed!
 
 import { Ionicons } from "@expo/vector-icons";
 import { CameraView, useCameraPermissions } from "expo-camera";
@@ -17,6 +17,8 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import * as faceapi from '@vladmandic/face-api';
+
 const { width, height } = Dimensions.get("window");
 
 export default function OptimizedExamVerification() {
@@ -33,12 +35,13 @@ export default function OptimizedExamVerification() {
   const [errorMessage, setErrorMessage] = useState("");
   const [faceDetected, setFaceDetected] = useState(false);
   const [modelsLoaded, setModelsLoaded] = useState(false);
+  const [localModelsLoaded, setLocalModelsLoaded] = useState(false);
 
   const API_BASE_URL = "https://ftpv.appwrite.network";
+  const MODEL_URL = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api/model';
 
   useEffect(() => {
     loadFaceRecognition();
-
     return () => {
       // Cleanup
     };
@@ -46,41 +49,35 @@ export default function OptimizedExamVerification() {
 
   const loadFaceRecognition = async () => {
     try {
-      console.log(`🔍 Checking API health at: ${API_BASE_URL}/api/face/health`);
-
-      // Check if your Next.js API is available
-      const response = await fetch(`${API_BASE_URL}/api/face/health`, {
-        method: "GET",
-        headers: {
-          Accept: "application/json",
-        },
+      console.log('🔄 Loading face-api.js models on mobile device...');
+      setStatus({
+        message: "Loading face recognition models...",
+        type: "info",
       });
 
-      console.log("📡 API response status:", response.status);
+      // Load models directly on the mobile device
+      await Promise.all([
+        faceapi.nets.ssdMobilenetv1.loadFromUri(MODEL_URL),
+        faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
+        faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL),
+      ]);
 
-      if (response.ok) {
-        const data = await response.json();
-        console.log("✅ API health check passed:", data);
-
-        setModelsLoaded(true);
-        setStatus({
-          message: "Face recognition API ready",
-          type: "success",
-        });
-      } else {
-        const errorText = await response.text();
-        console.error("❌ API returned error:", response.status, errorText);
-        throw new Error(`API returned ${response.status}`);
-      }
-    } catch (error) {
-      console.error("❌ Face recognition API error:", error);
+      setLocalModelsLoaded(true);
+      setModelsLoaded(true);
+      console.log('✅ Face recognition models loaded successfully on mobile');
+      
       setStatus({
-        message: `API unavailable: ${error.message}. Check your Next.js server.`,
+        message: "✅ Face recognition ready - all processing happens locally on your device",
+        type: "success",
+      });
+
+    } catch (error) {
+      console.error('❌ Failed to load face recognition models:', error);
+      setStatus({
+        message: `Failed to load models: ${error.message}`,
         type: "error",
       });
-      setErrorMessage(
-        `Cannot connect to API at ${API_BASE_URL}. Is your Next.js server running?`,
-      );
+      setErrorMessage(`Cannot load face recognition models: ${error.message}`);
     }
   };
 
@@ -166,10 +163,14 @@ export default function OptimizedExamVerification() {
     if (!cameraActive) {
       await startCamera();
       setStatus({
-        message:
-          '✅ Camera started. Position your face and click "Capture & Verify"',
+        message: '✅ Camera started. Position your face and click "Capture & Verify"',
         type: "success",
       });
+      return;
+    }
+
+    if (!localModelsLoaded) {
+      setErrorMessage('Face recognition models not loaded yet. Please wait...');
       return;
     }
 
@@ -179,198 +180,180 @@ export default function OptimizedExamVerification() {
     setErrorMessage("");
     setStatus({ message: "Capturing face...", type: "info" });
 
-    const MAX_RETRIES = 2;
-    let attempt = 1;
+    try {
+      // ==========================================
+      // STEP 1: Capture image from camera
+      // ==========================================
+      const capturedImageBase64 = await captureFaceImage();
+      if (!capturedImageBase64) {
+        throw new Error("Failed to capture image from camera");
+      }
 
-    while (attempt <= MAX_RETRIES) {
-      try {
-        const capturedImageBase64 = await captureFaceImage();
+      console.log("✅ Image captured successfully");
+      setProgress({ current: 20, total: 100 });
+      setStatus({ message: "🔍 Detecting face on your device...", type: "info" });
 
-        if (!capturedImageBase64) {
-          throw new Error("Failed to capture image from camera");
-        }
+      // ==========================================
+      // STEP 2: Detect face LOCALLY on mobile
+      // ==========================================
+      const img = await faceapi.bufferToImage(capturedImageBase64);
+      
+      const detection = await faceapi
+        .detectSingleFace(img, new faceapi.SsdMobilenetv1Options({ 
+          minConfidence: 0.3 
+        }))
+        .withFaceLandmarks()
+        .withFaceDescriptor();
 
-        console.log("✅ Image captured successfully");
-        setProgress({ current: 20, total: 100 });
-        setStatus({ message: "Analyzing face features...", type: "info" });
+      if (!detection) {
+        throw new Error("No face detected. Please ensure your face is clearly visible and well-lit.");
+      }
 
-        // Call your Next.js API to extract face descriptor
-        console.log(`📡 Calling API: ${API_BASE_URL}/api/face/extract`);
+      const descriptor = Array.from(detection.descriptor);
+      const confidence = Math.round(detection.detection.score * 100);
 
-        const extractResponse = await fetch(
-          `${API_BASE_URL}/api/face/extract`,
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              image: capturedImageBase64,
-            }),
-          },
-        );
+      console.log(`✅ Face detected locally (confidence: ${confidence}%)`);
+      setProgress({ current: 50, total: 100 });
+      setStatus({ message: "📥 Loading student database from server...", type: "info" });
 
-        console.log("📡 Extract response status:", extractResponse.status);
+      // ==========================================
+      // STEP 3: Get students from server
+      // ==========================================
+      console.log(`📡 Fetching students from: ${API_BASE_URL}/api/students/face-descriptors`);
 
-        if (!extractResponse.ok) {
-          const errorText = await extractResponse.text();
-          console.error("❌ Extract API error:", errorText);
-          throw new Error(`Extract API returned ${extractResponse.status}`);
-        }
-
-        const extractResult = await extractResponse.json();
-        console.log("✅ Extract result:", extractResult);
-
-        if (!extractResult.success) {
-          throw new Error(
-            extractResult.message || "Failed to detect or extract face",
-          );
-        }
-
-        console.log(
-          `✅ Face detected (confidence: ${extractResult.confidence}%)`,
-        );
-        setProgress({ current: 40, total: 100 });
-
-        setStatus({ message: "Loading student database...", type: "info" });
-
-        // Call your existing Next.js API to get students with face descriptors
-        console.log(
-          `📡 Calling API: ${API_BASE_URL}/api/students/face-descriptors`,
-        );
-
-        const studentsResponse = await fetch(
-          `${API_BASE_URL}/api/students/face-descriptors`,
-        );
-        console.log("📡 Students response status:", studentsResponse.status);
-
-        if (!studentsResponse.ok) {
-          const errorText = await studentsResponse.text();
-          console.error("❌ Students API error:", errorText);
-          throw new Error(`Students API returned ${studentsResponse.status}`);
-        }
-
-        const studentsResult = await studentsResponse.json();
-        console.log("✅ Students result:", studentsResult.count, "students");
-
-        if (!studentsResult.success || studentsResult.data.length === 0) {
-          setVerificationResult({
-            matched: false,
-            message:
-              "⚠️ No registered faces in database. Please register students first.",
-          });
-          setStatus({ message: "No registered faces found", type: "warning" });
-          setErrorMessage(
-            "Database is empty. Please register student faces first.",
-          );
-          break;
-        }
-
-        const totalStudents = studentsResult.data.length;
-        setProgress({ current: 60, total: 100 });
-        setStatus({
-          message: `Comparing against ${totalStudents} registered faces...`,
-          type: "info",
-        });
-
-        const storedDescriptors = studentsResult.data.map((student) => ({
-          ...student,
-          descriptor: JSON.parse(student.faceDescriptor),
-          matricNumber: student.matricNumber,
-          firstName: student.firstName,
-          surname: student.surname,
-          studentId: student.$id,
-        }));
-
-        setStatus({ message: "Finding best match...", type: "info" });
-
-        // Call your Next.js API to verify face
-        console.log(`📡 Calling API: ${API_BASE_URL}/api/face/verify`);
-
-        const verifyResponse = await fetch(`${API_BASE_URL}/api/face/verify`, {
-          method: "POST",
+      const studentsResponse = await fetch(
+        `${API_BASE_URL}/api/students/face-descriptors`,
+        {
+          method: 'GET',
           headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            inputDescriptor: extractResult.descriptor,
-            students: storedDescriptors,
-          }),
-        });
-
-        console.log("📡 Verify response status:", verifyResponse.status);
-
-        if (!verifyResponse.ok) {
-          const errorText = await verifyResponse.text();
-          console.error("❌ Verify API error:", errorText);
-          throw new Error(`Verify API returned ${verifyResponse.status}`);
+            'Accept': 'application/json',
+          }
         }
+      );
 
-        const verifyResult = await verifyResponse.json();
-        console.log("✅ Verify result:", verifyResult);
+      console.log("📡 Students API response status:", studentsResponse.status);
 
-        setProgress({ current: 100, total: 100 });
+      if (!studentsResponse.ok) {
+        const errorText = await studentsResponse.text();
+        console.error("❌ Students API error:", errorText);
+        throw new Error(`Failed to load student database (${studentsResponse.status})`);
+      }
 
-        if (verifyResult.success && verifyResult.matched) {
-          console.log("🎉 Match found:", verifyResult.student.matricNumber);
+      const studentsResult = await studentsResponse.json();
+      console.log("✅ Loaded", studentsResult.count || studentsResult.data?.length || 0, "students from database");
 
-          setVerificationResult({
-            matched: true,
-            student: verifyResult.student,
-            confidence: verifyResult.confidence,
-            distance: verifyResult.distance,
-            matchTime: new Date().toLocaleTimeString(),
-            verificationType: "Face Recognition",
-            method: "FaceAPI_Mobile",
-          });
-          setStatus({
-            message: "Identity verified successfully!",
-            type: "success",
-          });
-          stopCamera();
-          break;
-        } else {
-          console.log("❌ No match found");
-
-          setVerificationResult({
-            matched: false,
-            message: verifyResult.message || "No matching student found",
-            bestDistance: verifyResult.bestDistance,
-          });
-          setStatus({ message: "No match found", type: "error" });
-          break;
-        }
-      } catch (err) {
-        console.error(
-          `❌ Face verification attempt ${attempt}/${MAX_RETRIES} failed:`,
-          err,
-        );
-
-        if (attempt < MAX_RETRIES) {
-          setStatus({
-            message: `Verification error — retrying (${attempt}/${MAX_RETRIES})...`,
-            type: "warning",
-          });
-          await new Promise((resolve) => setTimeout(resolve, 1200));
-          attempt++;
-          continue;
-        }
-
-        setErrorMessage(err.message);
-        setStatus({
-          message: `Verification failed: ${err.message}`,
-          type: "error",
-        });
+      if (!studentsResult.success || !studentsResult.data || studentsResult.data.length === 0) {
         setVerificationResult({
           matched: false,
-          message: err.message,
+          message: "⚠️ No registered faces in database. Please register students first.",
         });
-        break;
+        setStatus({ message: "Database is empty", type: "warning" });
+        setErrorMessage("No registered student faces found. Please add students first.");
+        return;
       }
-    }
 
-    setIsVerifying(false);
-    setProgress({ current: 0, total: 0 });
+      const totalStudents = studentsResult.data.length;
+      setProgress({ current: 70, total: 100 });
+      setStatus({
+        message: `🔄 Comparing against ${totalStudents} registered faces...`,
+        type: "info",
+      });
+
+      // ==========================================
+      // STEP 4: Parse stored descriptors
+      // ==========================================
+      const storedDescriptors = studentsResult.data.map((student) => ({
+        ...student,
+        descriptor: JSON.parse(student.faceDescriptor),
+        matricNumber: student.matricNumber,
+        firstName: student.firstName,
+        surname: student.surname,
+        middleName: student.middleName || '',
+        department: student.department || 'N/A',
+        level: student.level || 'N/A',
+        profilePictureUrl: student.profilePictureUrl || null,
+        studentId: student.$id,
+      }));
+
+      console.log(`✅ Parsed ${storedDescriptors.length} student face descriptors`);
+
+      // ==========================================
+      // STEP 5: Compare LOCALLY using FaceMatcher
+      // ==========================================
+      setStatus({ message: "🎯 Finding best match...", type: "info" });
+
+      const labeledDescriptors = storedDescriptors.map(student => {
+        return new faceapi.LabeledFaceDescriptors(
+          student.matricNumber,
+          [new Float32Array(student.descriptor)]
+        );
+      });
+
+      const MATCH_THRESHOLD = 0.6; // Distance threshold (lower = stricter)
+      const faceMatcher = new faceapi.FaceMatcher(labeledDescriptors, MATCH_THRESHOLD);
+      const bestMatch = faceMatcher.findBestMatch(new Float32Array(descriptor));
+
+      setProgress({ current: 100, total: 100 });
+
+      // ==========================================
+      // STEP 6: Process match result
+      // ==========================================
+      if (bestMatch.label !== 'unknown') {
+        // ✅ MATCH FOUND!
+        const matchedStudent = storedDescriptors.find(
+          s => s.matricNumber === bestMatch.label
+        );
+        const matchConfidence = Math.round((1 - bestMatch.distance) * 100);
+
+        console.log("🎉 MATCH FOUND:", matchedStudent.matricNumber, `(${matchConfidence}% confidence)`);
+
+        setVerificationResult({
+          matched: true,
+          student: matchedStudent,
+          confidence: matchConfidence,
+          distance: bestMatch.distance,
+          matchTime: new Date().toLocaleTimeString(),
+          verificationType: "Face Recognition",
+          method: "FaceAPI_Mobile_Local",
+        });
+        
+        setStatus({
+          message: "✅ Identity verified successfully!",
+          type: "success",
+        });
+        
+        stopCamera();
+      } else {
+        // ❌ NO MATCH FOUND
+        console.log("❌ No match found (best distance:", bestMatch.distance, ")");
+
+        setVerificationResult({
+          matched: false,
+          message: `No matching student found in database (closest match: ${Math.round((1 - bestMatch.distance) * 100)}%)`,
+          bestDistance: bestMatch.distance,
+        });
+        
+        setStatus({ 
+          message: "❌ Face not recognized", 
+          type: "error" 
+        });
+      }
+
+    } catch (err) {
+      console.error("❌ Face verification failed:", err);
+      setErrorMessage(err.message);
+      setStatus({
+        message: `Verification failed: ${err.message}`,
+        type: "error",
+      });
+      setVerificationResult({
+        matched: false,
+        message: err.message,
+      });
+    } finally {
+      setIsVerifying(false);
+      setProgress({ current: 0, total: 0 });
+    }
   };
 
   const resetVerification = () => {
@@ -403,344 +386,346 @@ export default function OptimizedExamVerification() {
   }
 
   return (
-     <SafeAreaView style={styles.container}>
-    <LinearGradient
-      colors={["#eef2ff", "#faf5ff", "#fce7f3"]}
-      style={styles.container}
-    >
-      <ScrollView contentContainerStyle={styles.scrollContent}>
-        {/* Header */}
-        <View style={styles.header}>
-          <TouchableOpacity
-            style={styles.backButton}
-            onPress={() => router.back()}
-          >
-            <Ionicons name="arrow-back" size={24} color="#4b5563" />
-            <Text style={styles.backText}>Back</Text>
-          </TouchableOpacity>
-
-          <View style={styles.titleContainer}>
-            <Ionicons name="shield-checkmark" size={40} color="#6366f1" />
-            <Text style={styles.title}>Identity Verification</Text>
-          </View>
-
-          <Text style={styles.subtitle}>
-            Fast biometric authentication with face detection
-          </Text>
-
-          {/* API Status Indicator */}
-          <View style={styles.apiStatus}>
-            <View
-              style={[
-                styles.apiDot,
-                modelsLoaded ? styles.apiDotOnline : styles.apiDotOffline,
-              ]}
-            />
-            <Text style={styles.apiStatusText}>
-              API: {modelsLoaded ? "Connected" : "Disconnected"}
-            </Text>
-            <Text style={styles.apiUrlText}>{API_BASE_URL}</Text>
-          </View>
-        </View>
-
-        {/* Error Message */}
-        {errorMessage ? (
-          <View style={styles.errorContainer}>
-            <Ionicons name="alert-circle" size={24} color="#dc2626" />
-            <View style={styles.errorTextContainer}>
-              <Text style={styles.errorTitle}>Error</Text>
-              <Text style={styles.errorMessage}>{errorMessage}</Text>
-            </View>
-          </View>
-        ) : null}
-
-        {/* Status Message */}
-        {status.message ? (
-          <View style={[styles.statusContainer, getStatusColor()]}>
-            <Ionicons
-              name={
-                status.type === "success"
-                  ? "checkmark-circle"
-                  : status.type === "error"
-                    ? "close-circle"
-                    : status.type === "warning"
-                      ? "alert-circle"
-                      : "information-circle"
-              }
-              size={20}
-              color={
-                status.type === "success"
-                  ? "#059669"
-                  : status.type === "error"
-                    ? "#dc2626"
-                    : status.type === "warning"
-                      ? "#d97706"
-                      : "#2563eb"
-              }
-            />
-            <Text style={styles.statusText}>{status.message}</Text>
-            {isVerifying && <ActivityIndicator size="small" color="#6366f1" />}
-          </View>
-        ) : null}
-
-        {/* Progress Bar */}
-        {progress.total > 0 && isVerifying && (
-          <View style={styles.progressContainer}>
-            <View style={styles.progressHeader}>
-              <Text style={styles.progressText}>Processing...</Text>
-              <Text style={styles.progressText}>{progress.current}%</Text>
-            </View>
-            <View style={styles.progressBarBackground}>
-              <View
-                style={[styles.progressBar, { width: `${progress.current}%` }]}
-              />
-            </View>
-          </View>
-        )}
-
-        {/* Camera View */}
-        <View style={styles.cameraContainer}>
-          <Text style={styles.sectionTitle}>Face Verification</Text>
-
-          <View style={styles.cameraWrapper}>
-            {cameraActive ? (
-              <View style={styles.cameraViewContainer}>
-                <CameraView
-                  ref={cameraRef}
-                  style={styles.camera}
-                  facing={facing}
-                >
-                  {/* Face Detection Indicator */}
-                  <View style={styles.cameraOverlay}>
-                    <View
-                      style={[
-                        styles.faceIndicator,
-                        faceDetected
-                          ? styles.faceDetectedIndicator
-                          : styles.faceNotDetectedIndicator,
-                      ]}
-                    >
-                      <Ionicons name="camera" size={16} color="white" />
-                      <Text style={styles.faceIndicatorText}>
-                        {faceDetected ? "Face Detected" : "Ready to Capture"}
-                      </Text>
-                    </View>
-
-                    {/* Camera Toggle Button */}
-                    <TouchableOpacity
-                      style={styles.flipButton}
-                      onPress={toggleCameraFacing}
-                    >
-                      <Ionicons name="camera-reverse" size={32} color="white" />
-                    </TouchableOpacity>
-                  </View>
-                </CameraView>
-
-                {isVerifying && (
-                  <View style={styles.processingOverlay}>
-                    <View
-                      style={[
-                        styles.processingBar,
-                        { width: `${progress.current}%` },
-                      ]}
-                    />
-                  </View>
-                )}
-              </View>
-            ) : (
-              <View style={styles.cameraPlaceholder}>
-                <Ionicons name="camera-outline" size={64} color="#9ca3af" />
-                <Text style={styles.placeholderText}>
-                  Camera will activate when you start verification
-                </Text>
-              </View>
-            )}
-          </View>
-
-          <Text style={styles.hint}>
-            💡 Position your face in the frame for best results
-          </Text>
-
-          {/* Verification Button */}
-          <TouchableOpacity
-            style={[
-              styles.verifyButton,
-              (isVerifying || !modelsLoaded) && styles.verifyButtonDisabled,
-            ]}
-            onPress={handleFaceVerification}
-            disabled={isVerifying || !modelsLoaded}
-          >
-            <LinearGradient
-              colors={
-                isVerifying || !modelsLoaded
-                  ? ["#9ca3af", "#9ca3af"]
-                  : ["#6366f1", "#8b5cf6"]
-              }
-              style={styles.verifyButtonGradient}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 0 }}
+    <SafeAreaView style={styles.container}>
+      <LinearGradient
+        colors={["#eef2ff", "#faf5ff", "#fce7f3"]}
+        style={styles.container}
+      >
+        <ScrollView contentContainerStyle={styles.scrollContent}>
+          {/* Header */}
+          <View style={styles.header}>
+            <TouchableOpacity
+              style={styles.backButton}
+              onPress={() => router.back()}
             >
-              {isVerifying ? (
-                <>
-                  <ActivityIndicator size="small" color="white" />
-                  <Text style={styles.verifyButtonText}>
-                    Verifying face... {progress.current}%
-                  </Text>
-                </>
-              ) : !modelsLoaded ? (
-                <>
-                  <Ionicons name="alert-circle" size={20} color="white" />
-                  <Text style={styles.verifyButtonText}>API Disconnected</Text>
-                </>
-              ) : cameraActive ? (
-                <>
-                  <Ionicons name="camera" size={20} color="white" />
-                  <Text style={styles.verifyButtonText}>
-                    📸 Capture & Verify Face
-                  </Text>
-                </>
-              ) : (
-                <>
-                  <Ionicons name="videocam" size={20} color="white" />
-                  <Text style={styles.verifyButtonText}>🎥 Start Camera</Text>
-                </>
-              )}
-            </LinearGradient>
-          </TouchableOpacity>
-        </View>
+              <Ionicons name="arrow-back" size={24} color="#4b5563" />
+              <Text style={styles.backText}>Back</Text>
+            </TouchableOpacity>
 
-        {/* Verification Result */}
-        <View style={styles.resultContainer}>
-          <Text style={styles.sectionTitle}>Verification Result</Text>
+            <View style={styles.titleContainer}>
+              <Ionicons name="shield-checkmark" size={40} color="#6366f1" />
+              <Text style={styles.title}>Identity Verification</Text>
+            </View>
 
-          {!verificationResult && !isVerifying ? (
-            <View style={styles.noResultContainer}>
-              <Ionicons
-                name="shield-checkmark-outline"
-                size={120}
-                color="#d1d5db"
+            <Text style={styles.subtitle}>
+              Fast biometric authentication with face detection
+            </Text>
+
+            {/* Models Status Indicator */}
+            <View style={styles.apiStatus}>
+              <View
+                style={[
+                  styles.apiDot,
+                  localModelsLoaded ? styles.apiDotOnline : styles.apiDotOffline,
+                ]}
               />
-              <Text style={styles.noResultTitle}>
-                No verification in progress
+              <Text style={styles.apiStatusText}>
+                Models: {localModelsLoaded ? "Loaded" : "Loading..."}
               </Text>
-              <Text style={styles.noResultSubtitle}>
-                Start camera and verify to see results
+              <Text style={styles.apiUrlText}>
+                {localModelsLoaded ? "All processing happens locally on device" : "Downloading models..."}
               </Text>
             </View>
-          ) : null}
+          </View>
 
-          {verificationResult && !verificationResult.matched ? (
-            <View style={styles.noMatchContainer}>
-              <View style={styles.noMatchIconContainer}>
-                <Ionicons name="close-circle" size={64} color="#dc2626" />
+          {/* Error Message */}
+          {errorMessage ? (
+            <View style={styles.errorContainer}>
+              <Ionicons name="alert-circle" size={24} color="#dc2626" />
+              <View style={styles.errorTextContainer}>
+                <Text style={styles.errorTitle}>Error</Text>
+                <Text style={styles.errorMessage}>{errorMessage}</Text>
               </View>
-              <Text style={styles.noMatchTitle}>No Match Found</Text>
-              <Text style={styles.noMatchMessage}>
-                {verificationResult.message}
-              </Text>
-              <TouchableOpacity
-                style={styles.retryButton}
-                onPress={resetVerification}
-              >
-                <Text style={styles.retryButtonText}>Try Again</Text>
-              </TouchableOpacity>
             </View>
           ) : null}
 
-          {verificationResult &&
-          verificationResult.matched &&
-          verificationResult.student ? (
-            <View style={styles.successContainer}>
-              {/* Large Profile Picture */}
-              <View style={styles.profileImageContainer}>
-                <Image
-                  source={{
-                    uri:
-                      verificationResult.student.profilePictureUrl ||
-                      "https://via.placeholder.com/300",
-                  }}
-                  style={styles.profileImage}
+          {/* Status Message */}
+          {status.message ? (
+            <View style={[styles.statusContainer, getStatusColor()]}>
+              <Ionicons
+                name={
+                  status.type === "success"
+                    ? "checkmark-circle"
+                    : status.type === "error"
+                      ? "close-circle"
+                      : status.type === "warning"
+                        ? "alert-circle"
+                        : "information-circle"
+                }
+                size={20}
+                color={
+                  status.type === "success"
+                    ? "#059669"
+                    : status.type === "error"
+                      ? "#dc2626"
+                      : status.type === "warning"
+                        ? "#d97706"
+                        : "#2563eb"
+                }
+              />
+              <Text style={styles.statusText}>{status.message}</Text>
+              {isVerifying && <ActivityIndicator size="small" color="#6366f1" />}
+            </View>
+          ) : null}
+
+          {/* Progress Bar */}
+          {progress.total > 0 && isVerifying && (
+            <View style={styles.progressContainer}>
+              <View style={styles.progressHeader}>
+                <Text style={styles.progressText}>Processing...</Text>
+                <Text style={styles.progressText}>{progress.current}%</Text>
+              </View>
+              <View style={styles.progressBarBackground}>
+                <View
+                  style={[styles.progressBar, { width: `${progress.current}%` }]}
                 />
-                <View style={styles.successBadge}>
-                  <Ionicons name="checkmark" size={48} color="white" />
-                </View>
               </View>
+            </View>
+          )}
 
-              {/* Student Info */}
-              <View style={styles.studentInfoContainer}>
-                <Text style={styles.matchTitle}>✓ MATCH FOUND!</Text>
+          {/* Camera View */}
+          <View style={styles.cameraContainer}>
+            <Text style={styles.sectionTitle}>Face Verification</Text>
 
-                <View style={styles.infoCard}>
-                  <Text style={styles.infoLabel}>Full Name</Text>
-                  <Text style={styles.infoValue}>
-                    {verificationResult.student.firstName}{" "}
-                    {verificationResult.student.middleName}{" "}
-                    {verificationResult.student.surname}
-                  </Text>
-                </View>
-
-                <View style={styles.infoCard}>
-                  <Text style={styles.infoLabel}>Matric Number</Text>
-                  <Text style={[styles.infoValue, styles.matricNumber]}>
-                    {verificationResult.student.matricNumber}
-                  </Text>
-                </View>
-
-                <View style={styles.infoRow}>
-                  <View style={[styles.infoCard, styles.halfCard]}>
-                    <Text style={styles.infoLabel}>Department</Text>
-                    <Text style={styles.infoValueSmall}>
-                      {verificationResult.student.department}
-                    </Text>
-                  </View>
-
-                  <View style={[styles.infoCard, styles.halfCard]}>
-                    <Text style={styles.infoLabel}>Level</Text>
-                    <Text style={styles.infoValueSmall}>
-                      {verificationResult.student.level}
-                    </Text>
-                  </View>
-                </View>
-
-                <View style={styles.infoCard}>
-                  <Text style={styles.infoLabel}>Match Confidence</Text>
-                  <View style={styles.confidenceContainer}>
-                    <View style={styles.confidenceBarBackground}>
+            <View style={styles.cameraWrapper}>
+              {cameraActive ? (
+                <View style={styles.cameraViewContainer}>
+                  <CameraView
+                    ref={cameraRef}
+                    style={styles.camera}
+                    facing={facing}
+                  >
+                    {/* Face Detection Indicator */}
+                    <View style={styles.cameraOverlay}>
                       <View
                         style={[
-                          styles.confidenceBar,
-                          { width: `${verificationResult.confidence}%` },
+                          styles.faceIndicator,
+                          faceDetected
+                            ? styles.faceDetectedIndicator
+                            : styles.faceNotDetectedIndicator,
+                        ]}
+                      >
+                        <Ionicons name="camera" size={16} color="white" />
+                        <Text style={styles.faceIndicatorText}>
+                          {faceDetected ? "Face Detected" : "Ready to Capture"}
+                        </Text>
+                      </View>
+
+                      {/* Camera Toggle Button */}
+                      <TouchableOpacity
+                        style={styles.flipButton}
+                        onPress={toggleCameraFacing}
+                      >
+                        <Ionicons name="camera-reverse" size={32} color="white" />
+                      </TouchableOpacity>
+                    </View>
+                  </CameraView>
+
+                  {isVerifying && (
+                    <View style={styles.processingOverlay}>
+                      <View
+                        style={[
+                          styles.processingBar,
+                          { width: `${progress.current}%` },
                         ]}
                       />
                     </View>
-                    <Text style={styles.confidenceText}>
-                      {verificationResult.confidence}%
+                  )}
+                </View>
+              ) : (
+                <View style={styles.cameraPlaceholder}>
+                  <Ionicons name="camera-outline" size={64} color="#9ca3af" />
+                  <Text style={styles.placeholderText}>
+                    Camera will activate when you start verification
+                  </Text>
+                </View>
+              )}
+            </View>
+
+            <Text style={styles.hint}>
+              💡 Position your face in the frame for best results
+            </Text>
+
+            {/* Verification Button */}
+            <TouchableOpacity
+              style={[
+                styles.verifyButton,
+                (isVerifying || !localModelsLoaded) && styles.verifyButtonDisabled,
+              ]}
+              onPress={handleFaceVerification}
+              disabled={isVerifying || !localModelsLoaded}
+            >
+              <LinearGradient
+                colors={
+                  isVerifying || !localModelsLoaded
+                    ? ["#9ca3af", "#9ca3af"]
+                    : ["#6366f1", "#8b5cf6"]
+                }
+                style={styles.verifyButtonGradient}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 0 }}
+              >
+                {isVerifying ? (
+                  <>
+                    <ActivityIndicator size="small" color="white" />
+                    <Text style={styles.verifyButtonText}>
+                      Verifying face... {progress.current}%
                     </Text>
+                  </>
+                ) : !localModelsLoaded ? (
+                  <>
+                    <Ionicons name="cloud-download" size={20} color="white" />
+                    <Text style={styles.verifyButtonText}>Loading Models...</Text>
+                  </>
+                ) : cameraActive ? (
+                  <>
+                    <Ionicons name="camera" size={20} color="white" />
+                    <Text style={styles.verifyButtonText}>
+                      📸 Capture & Verify Face
+                    </Text>
+                  </>
+                ) : (
+                  <>
+                    <Ionicons name="videocam" size={20} color="white" />
+                    <Text style={styles.verifyButtonText}>🎥 Start Camera</Text>
+                  </>
+                )}
+              </LinearGradient>
+            </TouchableOpacity>
+          </View>
+
+          {/* Verification Result */}
+          <View style={styles.resultContainer}>
+            <Text style={styles.sectionTitle}>Verification Result</Text>
+
+            {!verificationResult && !isVerifying ? (
+              <View style={styles.noResultContainer}>
+                <Ionicons
+                  name="shield-checkmark-outline"
+                  size={120}
+                  color="#d1d5db"
+                />
+                <Text style={styles.noResultTitle}>
+                  No verification in progress
+                </Text>
+                <Text style={styles.noResultSubtitle}>
+                  Start camera and verify to see results
+                </Text>
+              </View>
+            ) : null}
+
+            {verificationResult && !verificationResult.matched ? (
+              <View style={styles.noMatchContainer}>
+                <View style={styles.noMatchIconContainer}>
+                  <Ionicons name="close-circle" size={64} color="#dc2626" />
+                </View>
+                <Text style={styles.noMatchTitle}>No Match Found</Text>
+                <Text style={styles.noMatchMessage}>
+                  {verificationResult.message}
+                </Text>
+                <TouchableOpacity
+                  style={styles.retryButton}
+                  onPress={resetVerification}
+                >
+                  <Text style={styles.retryButtonText}>Try Again</Text>
+                </TouchableOpacity>
+              </View>
+            ) : null}
+
+            {verificationResult &&
+            verificationResult.matched &&
+            verificationResult.student ? (
+              <View style={styles.successContainer}>
+                {/* Large Profile Picture */}
+                <View style={styles.profileImageContainer}>
+                  <Image
+                    source={{
+                      uri:
+                        verificationResult.student.profilePictureUrl ||
+                        "https://via.placeholder.com/300",
+                    }}
+                    style={styles.profileImage}
+                  />
+                  <View style={styles.successBadge}>
+                    <Ionicons name="checkmark" size={48} color="white" />
                   </View>
                 </View>
-              </View>
 
-              {/* Action Button */}
-              <TouchableOpacity
-                style={styles.verifyAnotherButton}
-                onPress={resetVerification}
-              >
-                <LinearGradient
-                  colors={["#6366f1", "#8b5cf6"]}
-                  style={styles.verifyButtonGradient}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 0 }}
+                {/* Student Info */}
+                <View style={styles.studentInfoContainer}>
+                  <Text style={styles.matchTitle}>✓ MATCH FOUND!</Text>
+
+                  <View style={styles.infoCard}>
+                    <Text style={styles.infoLabel}>Full Name</Text>
+                    <Text style={styles.infoValue}>
+                      {verificationResult.student.firstName}{" "}
+                      {verificationResult.student.middleName}{" "}
+                      {verificationResult.student.surname}
+                    </Text>
+                  </View>
+
+                  <View style={styles.infoCard}>
+                    <Text style={styles.infoLabel}>Matric Number</Text>
+                    <Text style={[styles.infoValue, styles.matricNumber]}>
+                      {verificationResult.student.matricNumber}
+                    </Text>
+                  </View>
+
+                  <View style={styles.infoRow}>
+                    <View style={[styles.infoCard, styles.halfCard]}>
+                      <Text style={styles.infoLabel}>Department</Text>
+                      <Text style={styles.infoValueSmall}>
+                        {verificationResult.student.department}
+                      </Text>
+                    </View>
+
+                    <View style={[styles.infoCard, styles.halfCard]}>
+                      <Text style={styles.infoLabel}>Level</Text>
+                      <Text style={styles.infoValueSmall}>
+                        {verificationResult.student.level}
+                      </Text>
+                    </View>
+                  </View>
+
+                  <View style={styles.infoCard}>
+                    <Text style={styles.infoLabel}>Match Confidence</Text>
+                    <View style={styles.confidenceContainer}>
+                      <View style={styles.confidenceBarBackground}>
+                        <View
+                          style={[
+                            styles.confidenceBar,
+                            { width: `${verificationResult.confidence}%` },
+                          ]}
+                        />
+                      </View>
+                      <Text style={styles.confidenceText}>
+                        {verificationResult.confidence}%
+                      </Text>
+                    </View>
+                  </View>
+                </View>
+
+                {/* Action Button */}
+                <TouchableOpacity
+                  style={styles.verifyAnotherButton}
+                  onPress={resetVerification}
                 >
-                  <Text style={styles.verifyButtonText}>
-                    Verify Another Student
-                  </Text>
-                </LinearGradient>
-              </TouchableOpacity>
-            </View>
-          ) : null}
-        </View>
-      </ScrollView>
-    </LinearGradient>
+                  <LinearGradient
+                    colors={["#6366f1", "#8b5cf6"]}
+                    style={styles.verifyButtonGradient}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 0 }}
+                  >
+                    <Text style={styles.verifyButtonText}>
+                      Verify Another Student
+                    </Text>
+                  </LinearGradient>
+                </TouchableOpacity>
+              </View>
+            ) : null}
+          </View>
+        </ScrollView>
+      </LinearGradient>
     </SafeAreaView>
   );
 }
