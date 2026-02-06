@@ -36,6 +36,7 @@ export default function OptimizedExamVerification() {
 
   // For local development (your computer's IP):
   const API_BASE_URL = "https://ftpv.appwrite.network";
+  
 
   useEffect(() => {
     loadFaceRecognition();
