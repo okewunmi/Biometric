@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -9,27 +9,26 @@ import {
   ActivityIndicator,
   ScrollView,
   FlatList,
-  Modal
 } from 'react-native';
-import { NativeModules, NativeEventEmitter } from 'react-native';
+import { CameraView, useCameraPermissions } from 'expo-camera';
 import { 
   getCoursesWithRegisteredStudents,
   createAttendanceSession,
   closeAttendanceSession,
   getSessionAttendanceReport,
   getStudentsForCourse,
-  getStudentsWithFingerprintsPNG,
   databases,
   config
 } from '@/lib/appwrite';
 import { Query, ID } from 'react-native-appwrite';
-import { SafeAreaView } from "react-native-safe-area-context";
-const { FingerprintModule } = NativeModules;
-const fingerprintEmitter = FingerprintModule ? new NativeEventEmitter(FingerprintModule) : null;
 
-const API_BASE_URL = 'https://ftpv.appwrite.network/';
+const API_BASE_URL = 'https://ftpv.appwrite.network';
 
 export default function AdminAttendanceInterface({ navigation }) {
+  // Camera permissions
+  const [permission, requestPermission] = useCameraPermissions();
+  const cameraRef = useRef(null);
+  
   // Core state
   const [courses, setCourses] = useState([]);
   const [selectedCourse, setSelectedCourse] = useState(null);
@@ -47,39 +46,14 @@ export default function AdminAttendanceInterface({ navigation }) {
   const [attendanceLog, setAttendanceLog] = useState([]);
   const [sessionReport, setSessionReport] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [scannerAvailable, setScannerAvailable] = useState(false);
+  const [cameraActive, setCameraActive] = useState(false);
+  const [facing, setFacing] = useState('front');
+  const [modelsLoaded, setModelsLoaded] = useState(false);
 
-  // Initialize fingerprint scanner
+  // Initialize face recognition API
   useEffect(() => {
-    checkFingerprintScanner();
+    checkFaceRecognitionAPI();
     loadCourses();
-
-    // Setup fingerprint event listeners
-    if (fingerprintEmitter) {
-      const listeners = [
-        fingerprintEmitter.addListener('onScanStarted', () => {
-          setStatus({ message: 'Place finger on scanner...', type: 'info' });
-        }),
-        
-        fingerprintEmitter.addListener('onScanComplete', async (data) => {
-          setStatus({ message: 'Verifying with server...', type: 'info' });
-          await verifyFingerprintWithServer(data.imageData);
-        }),
-        
-        fingerprintEmitter.addListener('onScanError', (error) => {
-          setStatus({ message: `Error: ${error.error}`, type: 'error' });
-          setIsVerifying(false);
-          Alert.alert('Scan Error', error.error);
-        })
-      ];
-
-      return () => {
-        listeners.forEach(listener => listener.remove());
-        if (FingerprintModule?.close) {
-          FingerprintModule.close();
-        }
-      };
-    }
   }, []);
 
   // Load students when course is selected
@@ -89,27 +63,29 @@ export default function AdminAttendanceInterface({ navigation }) {
     }
   }, [selectedCourse]);
 
-  const checkFingerprintScanner = async () => {
+  const checkFaceRecognitionAPI = async () => {
     try {
-      if (!FingerprintModule) {
-        console.log('⚠️ Fingerprint module not available');
-        return;
-      }
+      console.log('🔍 Checking Face Recognition API...');
+      const response = await fetch(`${API_BASE_URL}/api/face/health`, {
+        method: 'GET',
+        headers: { Accept: 'application/json' },
+      });
 
-      const availability = await FingerprintModule.isAvailable();
-      setScannerAvailable(availability.available);
-
-      if (availability.available) {
-        const initResult = await FingerprintModule.initialize();
-        if (initResult.success) {
-          setStatus({ message: 'Fingerprint scanner ready', type: 'success' });
-        }
+      if (response.ok) {
+        const data = await response.json();
+        console.log('✅ Face API ready:', data);
+        setModelsLoaded(true);
+        setStatus({ message: 'Face recognition API ready', type: 'success' });
       } else {
-        setStatus({ message: 'Connect scanner via OTG', type: 'warning' });
+        throw new Error(`API returned ${response.status}`);
       }
     } catch (error) {
-      console.error('Scanner check error:', error);
-      setStatus({ message: 'Scanner unavailable', type: 'warning' });
+      console.error('❌ Face API error:', error);
+      setStatus({
+        message: 'Face recognition API unavailable. Please check server.',
+        type: 'error'
+      });
+      setModelsLoaded(false);
     }
   };
 
@@ -255,17 +231,76 @@ export default function AdminAttendanceInterface({ navigation }) {
     }
   };
 
-  const handleScanFingerprint = async () => {
+  const startCamera = async () => {
+    console.log('📸 Starting camera...');
+
+    if (!permission?.granted) {
+      console.log('⚠️ Camera permission not granted, requesting...');
+      const { granted } = await requestPermission();
+
+      if (!granted) {
+        Alert.alert(
+          'Permission Denied',
+          'Camera permission is required for face verification.'
+        );
+        return;
+      }
+    }
+
+    setCameraActive(true);
+    setStatus({
+      message: '✅ Camera ready - position your face in frame',
+      type: 'success'
+    });
+  };
+
+  const stopCamera = () => {
+    setCameraActive(false);
+  };
+
+  const toggleCameraFacing = () => {
+    setFacing((current) => (current === 'back' ? 'front' : 'back'));
+  };
+
+  const captureFaceImage = async () => {
+    if (!cameraRef.current) {
+      console.error('❌ Camera ref is null');
+      return null;
+    }
+
+    try {
+      console.log('📸 Capturing photo...');
+
+      const photo = await cameraRef.current.takePictureAsync({
+        quality: 1.0,
+        base64: true,
+        exif: false,
+        skipProcessing: false,
+        imageType: 'jpg',
+      });
+
+      if (!photo || !photo.base64) {
+        throw new Error('Failed to capture image');
+      }
+
+      const imageData = `data:image/jpeg;base64,${photo.base64}`;
+      console.log('✅ Image captured successfully');
+      
+      return imageData;
+    } catch (error) {
+      console.error('❌ Capture error:', error);
+      return null;
+    }
+  };
+
+  const handleFaceVerification = async () => {
     if (!activeSession) {
       Alert.alert('Error', 'Please start a session first');
       return;
     }
 
-    if (!FingerprintModule || !scannerAvailable) {
-      Alert.alert(
-        'Scanner Not Available',
-        'Please connect the DigitalPersona scanner via OTG cable.'
-      );
+    if (!modelsLoaded) {
+      Alert.alert('Error', 'Face recognition API is not available');
       return;
     }
 
@@ -274,110 +309,114 @@ export default function AdminAttendanceInterface({ navigation }) {
       return;
     }
 
+    if (!cameraActive) {
+      await startCamera();
+      setStatus({
+        message: '✅ Camera started. Position your face and click "Capture & Verify"',
+        type: 'success'
+      });
+      return;
+    }
+
     setIsVerifying(true);
     setVerificationResult(null);
-    setProgress({ current: 0, total: 0 });
-    setStatus({ 
-      message: `Place finger on scanner for ${sessionType === 'signin' ? 'SIGN IN' : 'SIGN OUT'}...`, 
-      type: 'info' 
-    });
+    setProgress({ current: 0, total: 100 });
+    setStatus({ message: 'Capturing face...', type: 'info' });
 
     try {
-      // Step 1: Capture fingerprint
-      console.log('🔍 Starting NBIS verification process...');
-      const captureResult = await FingerprintModule.capturePrint({});
+      // Step 1: Capture face image
+      const capturedImageBase64 = await captureFaceImage();
 
-      if (!captureResult.success) {
-        throw new Error(captureResult.message || 'Scan failed');
+      if (!capturedImageBase64) {
+        throw new Error('Failed to capture image from camera');
       }
 
-      console.log('✅ Fingerprint captured, quality:', captureResult.quality + '%');
-      
-      if (captureResult.quality && captureResult.quality < 50) {
-        setStatus({ 
-          message: `Quality too low (${captureResult.quality}%). Please try again with a cleaner finger.`, 
-          type: 'warning' 
-        });
-        setIsVerifying(false);
-        return;
-      }
+      setProgress({ current: 20, total: 100 });
+      setStatus({ message: 'Analyzing face features...', type: 'info' });
 
-      setStatus({ message: 'Fingerprint captured! Verifying...', type: 'info' });
-      await verifyFingerprintWithServer(captureResult.imageData);
+      // Step 2: Extract face descriptor from captured image
+      console.log(`📡 Calling API: ${API_BASE_URL}/api/face/extract`);
 
-    } catch (error) {
-      console.error('❌ Verification error:', error);
-      setStatus({ message: error.message || 'Verification failed', type: 'error' });
-      setVerificationResult({
-        matched: false,
-        message: 'Error: ' + error.message
+      const extractResponse = await fetch(`${API_BASE_URL}/api/face/extract`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image: capturedImageBase64 }),
       });
-    } finally {
-      setIsVerifying(false);
-      setProgress({ current: 0, total: 0 });
-      if (FingerprintModule?.close) {
-        await FingerprintModule.close();
-      }
-    }
-  };
 
-  const verifyFingerprintWithServer = async (imageData) => {
-    try {
-      setStatus({ message: 'Loading database...', type: 'info' });
-
-      // Get all stored fingerprints
-      const fingerprintsResult = await getStudentsWithFingerprintsPNG();
-
-      if (!fingerprintsResult.success) {
-        throw new Error('Failed to fetch stored fingerprints: ' + fingerprintsResult.error);
+      if (!extractResponse.ok) {
+        const errorText = await extractResponse.text();
+        console.error('❌ Extract API error:', errorText);
+        throw new Error(`Extract API returned ${extractResponse.status}`);
       }
 
-      if (fingerprintsResult.data.length === 0) {
+      const extractResult = await extractResponse.json();
+
+      if (!extractResult.success) {
+        throw new Error(extractResult.message || 'Failed to detect or extract face');
+      }
+
+      console.log(`✅ Face detected (confidence: ${extractResult.confidence}%)`);
+      setProgress({ current: 40, total: 100 });
+      setStatus({ message: 'Loading student database...', type: 'info' });
+
+      // Step 3: Get all students with face descriptors
+      console.log(`📡 Calling API: ${API_BASE_URL}/api/students/face-descriptors`);
+
+      const studentsResponse = await fetch(`${API_BASE_URL}/api/students/face-descriptors`);
+
+      if (!studentsResponse.ok) {
+        throw new Error(`Students API returned ${studentsResponse.status}`);
+      }
+
+      const studentsResult = await studentsResponse.json();
+
+      if (!studentsResult.success || studentsResult.data.length === 0) {
         setVerificationResult({
           matched: false,
-          message: 'No registered fingerprints found in database'
+          message: '⚠️ No registered faces in database. Please register students first.'
         });
-        setStatus({ message: 'No registered fingerprints', type: 'warning' });
+        setStatus({ message: 'No registered faces found', type: 'warning' });
         setIsVerifying(false);
         return;
       }
 
-      const totalFingerprints = fingerprintsResult.data.length;
-      console.log(`📊 Database size: ${totalFingerprints} fingerprints`);
-      
-      setProgress({ current: 0, total: totalFingerprints });
-      setStatus({ 
-        message: `Comparing against ${totalFingerprints} fingerprints using NBIS...`, 
-        type: 'info' 
+      const totalStudents = studentsResult.data.length;
+      setProgress({ current: 60, total: 100 });
+      setStatus({
+        message: `Comparing against ${totalStudents} registered faces...`,
+        type: 'info'
       });
 
-      // Use optimized batch comparison via NBIS
-      const response = await fetch(`${API_BASE_URL}/api/fingerprint/verify-batch`, {
+      const storedDescriptors = studentsResult.data.map((student) => ({
+        ...student,
+        descriptor: JSON.parse(student.faceDescriptor),
+        matricNumber: student.matricNumber,
+        firstName: student.firstName,
+        surname: student.surname,
+        studentId: student.$id,
+      }));
+
+      // Step 4: Verify face against database
+      console.log(`📡 Calling API: ${API_BASE_URL}/api/face/verify`);
+
+      const verifyResponse = await fetch(`${API_BASE_URL}/api/face/verify`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          queryImage: imageData,
-          database: fingerprintsResult.data.map(fp => ({
-            id: fp.fileId,
-            studentId: fp.student.$id,
-            matricNumber: fp.student.matricNumber,
-            studentName: `${fp.student.firstName} ${fp.student.surname}`,
-            fingerName: fp.fingerName,
-            imageData: fp.imageData,
-            student: fp.student
-          }))
-        })
+          inputDescriptor: extractResult.descriptor,
+          students: storedDescriptors,
+        }),
       });
 
-      if (!response.ok) {
-        throw new Error(`Verification failed: ${response.status}`);
+      if (!verifyResponse.ok) {
+        throw new Error(`Verify API returned ${verifyResponse.status}`);
       }
 
-      const result = await response.json();
+      const verifyResult = await verifyResponse.json();
+      setProgress({ current: 100, total: 100 });
 
-      // Handle result
-      if (result.success && result.matched && result.bestMatch) {
-        const student = result.bestMatch.student;
+      if (verifyResult.success && verifyResult.matched) {
+        const student = verifyResult.student;
 
         // Check if student is registered for this course
         const isRegistered = registeredStudents.find(
@@ -394,27 +433,22 @@ export default function AdminAttendanceInterface({ navigation }) {
           return;
         }
 
-        console.log('\n✅ === MATCH FOUND (NBIS) ===');
-        console.log('Student:', result.bestMatch.studentName);
-        console.log('NBIS Score:', result.bestMatch.score);
-        console.log('============================\n');
+        console.log('🎉 Match found:', student.matricNumber);
 
         // Mark attendance in database
         const markResult = await markAttendanceInSession(
           activeSession.$id,
           student,
           sessionType,
-          result.bestMatch.fingerName,
-          selectedCourse.courseId 
+          selectedCourse.courseId
         );
 
         if (markResult.success) {
           setVerificationResult({
             matched: true,
             student: student,
-            confidence: result.bestMatch.confidence,
-            score: result.bestMatch.score,
-            fingerName: result.bestMatch.fingerName,
+            confidence: verifyResult.confidence,
+            distance: verifyResult.distance,
             action: sessionType,
             message: `${student.firstName} ${student.surname} ${sessionType === 'signin' ? 'signed in' : 'signed out'} successfully`
           });
@@ -425,9 +459,8 @@ export default function AdminAttendanceInterface({ navigation }) {
             timestamp: new Date().toLocaleTimeString(),
             student: student,
             action: sessionType,
-            fingerUsed: result.bestMatch.fingerName,
-            confidence: result.bestMatch.confidence,
-            score: result.bestMatch.score
+            confidence: verifyResult.confidence,
+            distance: verifyResult.distance
           }, ...prev]);
 
           // Update session count
@@ -451,29 +484,29 @@ export default function AdminAttendanceInterface({ navigation }) {
         }
 
       } else {
-        console.log('\n❌ === NO MATCH FOUND (NBIS) ===');
-        console.log('Best score:', result.bestMatch?.score || 0);
-        console.log('================================\n');
+        console.log('❌ No match found');
 
         setVerificationResult({
           matched: false,
-          message: `No match found. Best score: ${result.bestMatch?.score || 0}`,
-          totalCompared: result.totalCompared
+          message: `No match found. Best distance: ${verifyResult.bestDistance || 'N/A'}`,
         });
         setStatus({ message: 'No match found', type: 'error' });
       }
 
     } catch (error) {
-      console.error('❌ Verification error:', error);
+      console.error('❌ Face verification error:', error);
       setStatus({ message: error.message || 'Verification failed', type: 'error' });
       setVerificationResult({
         matched: false,
         message: 'Error: ' + error.message
       });
+    } finally {
+      setIsVerifying(false);
+      setProgress({ current: 0, total: 0 });
     }
   };
 
-  const markAttendanceInSession = async (sessionId, student, type, fingerUsed, courseId) => {
+  const markAttendanceInSession = async (sessionId, student, type, courseId) => {
     try {
       const timestamp = new Date().toISOString();
       const date = timestamp.split('T')[0];
@@ -519,7 +552,6 @@ export default function AdminAttendanceInterface({ navigation }) {
             record.$id,
             {
               signInTime: timestamp,
-              signInFingerUsed: fingerUsed,
               signInStatus: 'Present',
               sessionId: sessionId
             }
@@ -559,7 +591,6 @@ export default function AdminAttendanceInterface({ navigation }) {
             record.$id,
             {
               signOutTime: timestamp,
-              signOutFingerUsed: fingerUsed,
               signOutStatus: 'Completed',
               totalDuration: durationMinutes
             }
@@ -587,10 +618,8 @@ export default function AdminAttendanceInterface({ navigation }) {
               courseTitle: activeSession.courseTitle,
               attendanceDate: date,
               signInTime: timestamp,
-              signInFingerUsed: fingerUsed,
               signInStatus: 'Present',
               signOutTime: null,
-              signOutFingerUsed: '',
               signOutStatus: null,
               totalDuration: 0,
               isActive: true,
@@ -657,6 +686,7 @@ export default function AdminAttendanceInterface({ navigation }) {
                 setActiveSession(null);
                 setRegisteredStudents([]);
                 setVerificationResult(null);
+                setCameraActive(false);
                 setStatus({
                   message: 'Session closed successfully',
                   type: 'success'
@@ -682,6 +712,7 @@ export default function AdminAttendanceInterface({ navigation }) {
     setVerificationResult(null);
     setSessionReport(null);
     setRegisteredStudents([]);
+    setCameraActive(false);
     setStatus({ message: 'Ready to start new session', type: 'info' });
   };
 
@@ -807,19 +838,23 @@ export default function AdminAttendanceInterface({ navigation }) {
 
   // Main interface
   return (
-    // <SafeAreaView style={styles.safeArea}>
     <ScrollView style={styles.container}>
       <View style={styles.header}>
-        {/* <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton}>
-          <Text style={styles.backButtonText}>← Back</Text>
-        </TouchableOpacity> */}
         <Text style={styles.title}>📋 Mark Attendance</Text>
         <Text style={styles.subtitle}>
-          NBIS fingerprint verification system
+          Face recognition verification system
           {activeSession && registeredStudents.length > 0 && (
             <Text style={styles.registeredCount}> • {registeredStudents.length} registered</Text>
           )}
         </Text>
+
+        {/* API Status */}
+        <View style={styles.apiStatus}>
+          <View style={[styles.apiDot, modelsLoaded ? styles.apiDotOnline : styles.apiDotOffline]} />
+          <Text style={styles.apiStatusText}>
+            API: {modelsLoaded ? 'Connected' : 'Disconnected'}
+          </Text>
+        </View>
       </View>
 
       {/* Status Display */}
@@ -844,7 +879,7 @@ export default function AdminAttendanceInterface({ navigation }) {
             />
           </View>
           <Text style={styles.progressText}>
-            {progress.current} / {progress.total}
+            {progress.current}%
           </Text>
         </View>
       )}
@@ -974,32 +1009,67 @@ export default function AdminAttendanceInterface({ navigation }) {
             </View>
           </View>
 
-          {/* Instructions */}
-          <View style={styles.instructionsCard}>
-            <Text style={styles.instructionsTitle}>📋 Scanning Tips:</Text>
-            <Text style={styles.instructionText}>• Ensure finger is clean and dry</Text>
-            <Text style={styles.instructionText}>• Place finger firmly and centered</Text>
-            <Text style={styles.instructionText}>• Do not move until scan completes</Text>
-            <Text style={styles.instructionText}>• Quality should be above 50%</Text>
-            <Text style={styles.nbisNote}>💡 Using NIST NBIS (BOZORTH3)</Text>
+          {/* Camera View */}
+          <View style={styles.cameraContainer}>
+            <Text style={styles.instructionsTitle}>📸 Face Verification Camera</Text>
+            
+            <View style={styles.cameraWrapper}>
+              {cameraActive ? (
+                <View style={styles.cameraViewContainer}>
+                  <CameraView
+                    ref={cameraRef}
+                    style={styles.camera}
+                    facing={facing}
+                  >
+                    <View style={styles.cameraOverlay}>
+                      <View style={styles.faceIndicator}>
+                        <Text style={styles.faceIndicatorText}>
+                          {isVerifying ? 'Processing...' : 'Ready to Capture'}
+                        </Text>
+                      </View>
+
+                      <TouchableOpacity
+                        style={styles.flipButton}
+                        onPress={toggleCameraFacing}
+                      >
+                        <Text style={styles.flipButtonText}>🔄</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </CameraView>
+                </View>
+              ) : (
+                <View style={styles.cameraPlaceholder}>
+                  <Text style={styles.placeholderEmoji}>📷</Text>
+                  <Text style={styles.placeholderText}>
+                    Camera will activate when you start verification
+                  </Text>
+                </View>
+              )}
+            </View>
+
+            <Text style={styles.hint}>💡 Position face in frame and ensure good lighting</Text>
           </View>
 
-          {/* Scan Button */}
+          {/* Verify Button */}
           <TouchableOpacity
             style={[
               styles.scanButton,
-              (isVerifying || !scannerAvailable) && styles.scanButtonDisabled
+              (isVerifying || !modelsLoaded) && styles.scanButtonDisabled
             ]}
-            onPress={handleScanFingerprint}
-            disabled={isVerifying || !scannerAvailable}
+            onPress={handleFaceVerification}
+            disabled={isVerifying || !modelsLoaded}
           >
             {isVerifying ? (
               <View style={styles.scanningContent}>
                 <ActivityIndicator color="#fff" />
-                <Text style={styles.scanButtonText}>Verifying...</Text>
+                <Text style={styles.scanButtonText}>Verifying... {progress.current}%</Text>
               </View>
+            ) : !modelsLoaded ? (
+              <Text style={styles.scanButtonText}>⚠️ API Disconnected</Text>
+            ) : cameraActive ? (
+              <Text style={styles.scanButtonText}>📸 Capture & Verify Face</Text>
             ) : (
-              <Text style={styles.scanButtonText}>👆 Scan Student Fingerprint</Text>
+              <Text style={styles.scanButtonText}>🎥 Start Camera</Text>
             )}
           </TouchableOpacity>
 
@@ -1022,10 +1092,10 @@ export default function AdminAttendanceInterface({ navigation }) {
               {verificationResult.matched && (
                 <>
                   <Text style={styles.resultDetail}>
-                    Confidence: {verificationResult.confidence}% • Score: {verificationResult.score}
+                    Confidence: {verificationResult.confidence}%
                   </Text>
                   <Text style={styles.resultDetail}>
-                    Finger: {verificationResult.fingerName}
+                    Distance: {verificationResult.distance?.toFixed(3)}
                   </Text>
                 </>
               )}
@@ -1072,12 +1142,9 @@ export default function AdminAttendanceInterface({ navigation }) {
                       ]}>
                         {item.action === 'signin' ? '✅ Signed In' : '🚪 Signed Out'}
                       </Text>
-                      <Text style={[styles.logBadge, { backgroundColor: '#DBEAFE' }]}>
-                        {item.fingerUsed}
-                      </Text>
                     </View>
                     <Text style={styles.logDetails}>
-                      Confidence: {item.confidence}% • Score: {item.score}
+                      Confidence: {item.confidence}% • Distance: {item.distance?.toFixed(3)}
                     </Text>
                   </View>
                   <Text style={styles.logTime}>{item.timestamp}</Text>
@@ -1089,7 +1156,6 @@ export default function AdminAttendanceInterface({ navigation }) {
         </View>
       )}
     </ScrollView>
-    // </SafeAreaView>
   );
 }
 
@@ -1097,7 +1163,7 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#F3F4F6',
-    marginTop:30,
+    marginTop: 30,
   },
   loadingContainer: {
     flex: 1,
@@ -1137,6 +1203,31 @@ const styles = StyleSheet.create({
   registeredCount: {
     color: '#6366F1',
     fontWeight: '600'
+  },
+  apiStatus: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 12,
+    padding: 8,
+    backgroundColor: '#F9FAFB',
+    borderRadius: 8,
+  },
+  apiDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    marginRight: 8,
+  },
+  apiDotOnline: {
+    backgroundColor: '#10B981',
+  },
+  apiDotOffline: {
+    backgroundColor: '#EF4444',
+  },
+  apiStatusText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#374151',
   },
   statusCard: {
     margin: 16,
@@ -1325,28 +1416,75 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#111827'
   },
-  instructionsCard: {
-    backgroundColor: '#F9FAFB',
-    padding: 16,
-    borderRadius: 12,
+  cameraContainer: {
     marginBottom: 16
   },
   instructionsTitle: {
     fontSize: 14,
     fontWeight: '600',
     color: '#374151',
-    marginBottom: 8
+    marginBottom: 12
   },
-  instructionText: {
-    fontSize: 13,
-    color: '#6B7280',
-    marginBottom: 4
+  cameraWrapper: {
+    marginBottom: 12
   },
-  nbisNote: {
+  cameraViewContainer: {
+    borderRadius: 12,
+    overflow: 'hidden',
+    height: 400,
+    backgroundColor: '#000'
+  },
+  camera: {
+    flex: 1
+  },
+  cameraOverlay: {
+    flex: 1,
+    backgroundColor: 'transparent',
+    justifyContent: 'space-between',
+    padding: 16
+  },
+  faceIndicator: {
+    alignSelf: 'flex-start',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 8,
+    backgroundColor: '#6366F1'
+  },
+  faceIndicatorText: {
+    color: 'white',
+    fontSize: 14,
+    fontWeight: '600'
+  },
+  flipButton: {
+    alignSelf: 'flex-end',
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    padding: 12,
+    borderRadius: 50
+  },
+  flipButtonText: {
+    fontSize: 24
+  },
+  cameraPlaceholder: {
+    height: 400,
+    backgroundColor: '#1F2937',
+    borderRadius: 12,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20
+  },
+  placeholderEmoji: {
+    fontSize: 64,
+    marginBottom: 12
+  },
+  placeholderText: {
+    color: '#9CA3AF',
+    fontSize: 14,
+    textAlign: 'center'
+  },
+  hint: {
     fontSize: 12,
-    color: '#3B82F6',
-    marginTop: 8,
-    fontWeight: '500'
+    color: '#6B7280',
+    textAlign: 'center'
   },
   scanButton: {
     backgroundColor: '#10B981',

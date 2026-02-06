@@ -22,7 +22,7 @@ const { width, height } = Dimensions.get("window");
 export default function OptimizedExamVerification() {
   const router = useRouter();
   const cameraRef = useRef(null);
-
+  const [faceInFrame, setFaceInFrame] = useState(false);
   const [permission, requestPermission] = useCameraPermissions();
   const [facing, setFacing] = useState("front");
   const [isVerifying, setIsVerifying] = useState(false);
@@ -36,7 +36,6 @@ export default function OptimizedExamVerification() {
 
   // For local development (your computer's IP):
   const API_BASE_URL = "https://ftpv.appwrite.network";
-  
 
   useEffect(() => {
     loadFaceRecognition();
@@ -143,11 +142,14 @@ export default function OptimizedExamVerification() {
     }
 
     try {
-      console.log("📸 Capturing photo...");
+      console.log("📸 Capturing photo with improved settings...");
+
       const photo = await cameraRef.current.takePictureAsync({
-        quality: 0.9,
+        quality: 1.0, // ← Changed from 0.9 to 1.0 (max quality)
         base64: true,
         exif: false,
+        skipProcessing: false, // ← Added: ensures proper processing
+        imageType: "jpg", // ← Added: explicit format
       });
 
       if (!photo || !photo.base64) {
@@ -155,7 +157,12 @@ export default function OptimizedExamVerification() {
       }
 
       const imageData = `data:image/jpeg;base64,${photo.base64}`;
-      console.log("✅ Image captured, size:", imageData.length, "bytes");
+
+      // Log image details for debugging
+      console.log("✅ Image captured:");
+      console.log("  - Size:", imageData.length, "bytes");
+      console.log("  - Dimensions:", photo.width, "x", photo.height);
+      console.log("  - First 100 chars:", imageData.substring(0, 100));
 
       return imageData;
     } catch (error) {
@@ -412,13 +419,13 @@ export default function OptimizedExamVerification() {
       <ScrollView contentContainerStyle={styles.scrollContent}>
         {/* Header */}
         <View style={styles.header}>
-          <TouchableOpacity
+          {/* <TouchableOpacity
             style={styles.backButton}
             onPress={() => router.back()}
           >
             <Ionicons name="arrow-back" size={24} color="#4b5563" />
             <Text style={styles.backText}>Back</Text>
-          </TouchableOpacity>
+          </TouchableOpacity> */}
 
           <View style={styles.titleContainer}>
             <Ionicons name="shield-checkmark" size={40} color="#6366f1" />
@@ -760,7 +767,7 @@ const styles = StyleSheet.create({
     paddingBottom: 40,
   },
   header: {
-    marginBottom: 24,
+    marginVertical: 24,
   },
   backButton: {
     flexDirection: "row",
