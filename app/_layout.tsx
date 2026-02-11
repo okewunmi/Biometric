@@ -1,10 +1,10 @@
 // export default RootLayout;
-import React, { useEffect, useCallback } from "react";
-import { SplashScreen, Stack } from "expo-router";
 import { useFonts } from "expo-font";
+import { SplashScreen, Stack } from "expo-router";
 import { StatusBar } from "expo-status-bar";
+import React, { useCallback, useEffect } from "react";
 import { View } from "react-native";
-import 'react-native-url-polyfill/auto';
+import "react-native-url-polyfill/auto";
 
 // ✅ No AdminAuthProvider needed - Zustand works globally!
 
@@ -47,6 +47,7 @@ const RootLayout = () => {
         <Stack.Screen name="index" options={{ headerShown: false }} />
         <Stack.Screen name="(auth)" options={{ headerShown: false }} />
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+        <Stack.Screen name="(student)" options={{ headerShown: false }} />
       </Stack>
       <StatusBar style="auto" />
     </View>
