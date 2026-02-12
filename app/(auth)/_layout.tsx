@@ -25,6 +25,8 @@ export default function AuthLayout() {
     >
       <Stack.Screen name="signIn" />
       <Stack.Screen name="signUp" />
+      <Stack.Screen name="adminLogin" />
+      <Stack.Screen name="studentLogin" />
     </Stack>
   );
 }

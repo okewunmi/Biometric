@@ -122,7 +122,7 @@ const Index = () => {
         router.replace("/(tabs)/home");
       } else if (isStudent) {
         // Student logged in - go to student page
-        router.replace("/(student)/index");
+        router.replace("/(student)/student");
       } else {
         // Fallback
         router.replace("/(auth)/signIn");
