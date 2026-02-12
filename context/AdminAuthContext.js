@@ -1,122 +1,4 @@
-// import { getCurrentUser, logOut } from '@/lib/appwrite';
-// import { useRouter, useSegments } from 'expo-router';
-// import { createContext, useContext, useEffect, useRef, useState } from 'react';
 
-// // Create context
-// const AdminAuthContext = createContext(undefined);
-
-// export const AdminAuthProvider = ({ children }) => {
-//   const [admin, setAdmin] = useState(null);
-//   const [loading, setLoading] = useState(true);
-//   const [isCheckingAuth, setIsCheckingAuth] = useState(false);
-//   const router = useRouter();
-//   const segments = useSegments();
-//   const hasCheckedInitialAuth = useRef(false); // Prevent multiple initial checks
-
-//   useEffect(() => {
-//     // Only check auth once on mount
-//     if (!hasCheckedInitialAuth.current) {
-//       hasCheckedInitialAuth.current = true;
-//       checkAuth();
-//     }
-//   }, []);
-
-//   // Handle navigation based on auth state
-//   useEffect(() => {
-//     if (loading || isCheckingAuth) return; // Don't redirect while checking
-
-//     const inAuthGroup = segments[0] === '(auth)';
-//     const inTabsGroup = segments[0] === '(tabs)';
-
-//     if (!admin && !inAuthGroup) {
-//       // User not logged in and not on auth screen - redirect to login
-//       console.log('No active session, redirecting to login');
-//       router.replace('/signIn');
-//     } else if (admin && inAuthGroup) {
-//       // User logged in but on auth screen - redirect to home
-//       console.log('User authenticated, redirecting to home');
-//       router.replace('/home');
-//     }
-//   }, [admin, loading, segments, isCheckingAuth]);
-
-//   const checkAuth = async () => {
-//     // Prevent concurrent auth checks
-//     if (isCheckingAuth) {
-//       console.log('⏳ Auth check already in progress');
-//       return;
-//     }
-
-//     setIsCheckingAuth(true);
-//     setLoading(true);
-
-//     try {
-//       console.log('🔍 Checking authentication...');
-//       const result = await getCurrentUser();
-
-//       if (result && result.username) {
-//         // User is logged in
-//         console.log('✅ User authenticated:', result.username);
-//         setAdmin(result);
-//       } else {
-//         // No user found
-//         console.log('❌ No active session');
-//         setAdmin(null);
-//       }
-//     } catch (error) {
-//       console.error('❌ Auth check error:', error);
-//       setAdmin(null);
-//     } finally {
-//       setLoading(false);
-//       setIsCheckingAuth(false);
-//     }
-//   };
-
-//   const logout = async () => {
-//     try {
-//       console.log('🔴 Logging out...');
-//       await logOut();
-//       setAdmin(null);
-//       console.log('✅ Admin logged out successfully');
-
-//       // Small delay to ensure state is cleared before redirect
-//       setTimeout(() => {
-//         router.replace('/signIn');
-//       }, 100);
-//     } catch (error) {
-//       console.error('❌ Logout error:', error);
-//       // Still clear state and redirect even if logout fails
-//       setAdmin(null);
-//       router.replace('/signIn');
-//     }
-//   };
-
-//   const value = {
-//     admin,
-//     loading,
-//     checkAuth,
-//     logout,
-//     isAuthenticated: !!admin,
-//   };
-
-//   // Show loading screen while checking initial auth
-//   if (loading && !hasCheckedInitialAuth.current) {
-//     return null; // Or return a loading component
-//   }
-
-//   return (
-//     <AdminAuthContext.Provider value={value}>
-//       {children}
-//     </AdminAuthContext.Provider>
-//   );
-// };
-
-// export const useAdminAuth = () => {
-//   const context = useContext(AdminAuthContext);
-//   if (!context) {
-//     throw new Error('useAdminAuth must be used within AdminAuthProvider');
-//   }
-//   return context;
-// };
 import { getCurrentUser, logOut } from "@/lib/appwrite";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useRouter, useSegments } from "expo-router";
@@ -161,7 +43,7 @@ export const AuthProvider = ({ children }) => {
     } else if (user && userType === "student" && inAuthGroup) {
       // Student logged in but on auth screen - redirect to student page
       console.log("Student authenticated, redirecting to student page");
-      router.replace("/(student)/student");
+      router.replace("/student");
     } else if (user && userType === "admin" && inStudentGroup) {
       // Admin trying to access student routes
       console.log("Admin cannot access student routes, redirecting to home");
@@ -171,7 +53,7 @@ export const AuthProvider = ({ children }) => {
       console.log(
         "Student cannot access admin routes, redirecting to student page",
       );
-      router.replace("/(student)/student");
+      router.replace("/student");
     }
   }, [user, userType, loading, segments, isCheckingAuth]);
 
