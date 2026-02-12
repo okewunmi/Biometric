@@ -26,7 +26,7 @@ export default function StudentLayout() {
       }}
     >
       <Stack.Screen
-        name="student"
+        name="index"
         options={{
           headerShown: false,
         }}
