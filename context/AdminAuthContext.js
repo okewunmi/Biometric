@@ -161,7 +161,7 @@ export const AuthProvider = ({ children }) => {
     } else if (user && userType === "student" && inAuthGroup) {
       // Student logged in but on auth screen - redirect to student page
       console.log("Student authenticated, redirecting to student page");
-      router.replace("/(student)/student");
+      router.replace("/(student)/index");
     } else if (user && userType === "admin" && inStudentGroup) {
       // Admin trying to access student routes
       console.log("Admin cannot access student routes, redirecting to home");
@@ -171,7 +171,7 @@ export const AuthProvider = ({ children }) => {
       console.log(
         "Student cannot access admin routes, redirecting to student page",
       );
-      router.replace("/(student)/student");
+      router.replace("/(student)/index");
     }
   }, [user, userType, loading, segments, isCheckingAuth]);
 

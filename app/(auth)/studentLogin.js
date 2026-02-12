@@ -4,15 +4,15 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useRouter } from "expo-router";
 import { useEffect, useState } from "react";
 import {
-    ActivityIndicator,
-    KeyboardAvoidingView,
-    Platform,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View,
+  ActivityIndicator,
+  KeyboardAvoidingView,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
@@ -49,7 +49,7 @@ export default function StudentLoginPage() {
       const studentData = await AsyncStorage.getItem("studentData");
       if (studentData) {
         console.log("✅ Student already logged in, redirecting");
-        router.replace("/(student)/student");
+        router.replace("/(student)/index");
       }
     } catch (error) {
       console.error("Error checking student auth:", error);
@@ -101,7 +101,7 @@ export default function StudentLoginPage() {
         await new Promise((resolve) => setTimeout(resolve, 200));
 
         // Navigate to student screen
-        router.replace("/(student)/student");
+        router.replace("/(student)/index");
       } else {
         console.log("❌ Student login failed:", result.error);
         setError(result.error || "Login failed");
